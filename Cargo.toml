@@ -1,0 +1,15 @@
+[package]
+name = "winjector"
+version = "0.1.0"
+authors = ["Ben-Lichtman"]
+edition = "2018"
+
+[dependencies]
+thiserror = "1.0.25"
+windows = { version = "0.13.0", features = ["default"] }
+ntapi = "0.3.6"
+hex = "0.4.3"
+object = "0.25.3"
+
+[build-dependencies]
+windows = { version = "0.13.0", features = ["default"] }
