@@ -1,15 +1,26 @@
 [package]
 name = "winjector"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Ben-Lichtman"]
-edition = "2018"
+edition = "2021"
 
 [dependencies]
-thiserror = "1.0.25"
-windows = { version = "0.13.0", features = ["default"] }
-ntapi = "0.3.6"
-hex = "0.4.3"
-object = "0.25.3"
+iced-x86 = { version = "1.17.0", features = ["code_asm"] }
+thiserror = "1.0.30"
 
-[build-dependencies]
-windows = { version = "0.13.0", features = ["default"] }
+[dependencies.windows]
+version = "0.34.0"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_SystemInformation",
+    "Win32_Security",
+    "Win32_System_Kernel",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_ProcessStatus",
+]

@@ -1,14 +1,15 @@
-use std::mem::MaybeUninit;
-
-use crate::bindings::*;
+use windows::Win32::System::{
+	Diagnostics::Debug::PROCESSOR_ARCHITECTURE,
+	SystemInformation::{GetSystemInfo, SYSTEM_INFO},
+};
 
 pub struct SystemInfo {
 	inner: SYSTEM_INFO,
 }
 
 impl SystemInfo {
-	pub fn processor_architecture(&self) -> ProcessorArchitecture {
-		unsafe { ProcessorArchitecture(self.inner.Anonymous.Anonymous.wProcessorArchitecture as _) }
+	pub fn processor_architecture(&self) -> PROCESSOR_ARCHITECTURE {
+		unsafe { self.inner.Anonymous.Anonymous.wProcessorArchitecture }
 	}
 
 	pub fn page_size(&self) -> u32 { self.inner.dwPageSize }
@@ -26,7 +27,7 @@ impl SystemInfo {
 
 pub fn get_system_info() -> SystemInfo {
 	let mut info = SystemInfo {
-		inner: unsafe { MaybeUninit::zeroed().assume_init() },
+		inner: SYSTEM_INFO::default(),
 	};
 	unsafe { GetSystemInfo(&mut info.inner) };
 	info

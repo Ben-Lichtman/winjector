@@ -1,26 +1,35 @@
-use std::{
-	ffi::{c_void, CString},
-	mem::size_of,
-};
+#![allow(clippy::missing_safety_doc)]
 
 use crate::{
-	bindings::*,
 	error::{Error, Result},
 	windows_wrapper::process::Process,
 	BUFFER_SIZE,
 };
+use std::{ffi::CString, mem::size_of};
+use windows::{
+	core::PCSTR,
+	Win32::{
+		Foundation::{HANDLE, HINSTANCE},
+		System::{
+			LibraryLoader::GetProcAddress,
+			ProcessStatus::{
+				K32GetModuleBaseNameA, K32GetModuleFileNameExA, K32GetModuleInformation, MODULEINFO,
+			},
+		},
+	},
+};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ModuleInfo {
-	inner: MODULEINFO,
+	pub inner: MODULEINFO,
 }
 
 impl ModuleInfo {
-	pub fn base(&self) -> *mut c_void { self.inner.lpBaseOfDll }
+	pub fn base(&self) -> usize { self.inner.lpBaseOfDll as _ }
 
 	pub fn size(&self) -> u32 { self.inner.SizeOfImage }
 
-	pub fn entry_point(&self) -> *mut c_void { self.inner.EntryPoint }
+	pub fn entry_point(&self) -> usize { self.inner.EntryPoint as _ }
 }
 
 #[derive(Debug)]
@@ -41,12 +50,7 @@ impl<'a> Module<'a> {
 	pub fn base_name(&self) -> Result<Vec<u8>> {
 		let mut buf = vec![0u8; BUFFER_SIZE];
 		let n_bytes = unsafe {
-			K32GetModuleBaseNameA(
-				self.process.handle(),
-				HINSTANCE(self.handle.0),
-				PSTR(buf.as_mut_ptr()),
-				buf.len() as _,
-			)
+			K32GetModuleBaseNameA(self.process.handle(), HINSTANCE(self.handle.0), &mut buf)
 		};
 		if n_bytes == 0 {
 			return Err(Error::ApiCallFailed);
@@ -58,12 +62,7 @@ impl<'a> Module<'a> {
 	pub fn file_name(&self) -> Result<Vec<u8>> {
 		let mut buf = vec![0u8; BUFFER_SIZE];
 		let n_bytes = unsafe {
-			K32GetModuleFileNameExA(
-				self.process.handle(),
-				HINSTANCE(self.handle.0),
-				PSTR(buf.as_mut_ptr()),
-				buf.len() as _,
-			)
+			K32GetModuleFileNameExA(self.process.handle(), HINSTANCE(self.handle.0), &mut buf)
 		};
 		if n_bytes == 0 {
 			return Err(Error::ApiCallFailed);
@@ -73,18 +72,16 @@ impl<'a> Module<'a> {
 	}
 
 	pub fn info(&self) -> Result<ModuleInfo> {
-		let mut info = ModuleInfo {
-			inner: MODULEINFO::default(),
-		};
-		let err = unsafe {
+		let mut info = ModuleInfo::default();
+		unsafe {
 			K32GetModuleInformation(
 				self.process.handle(),
 				HINSTANCE(self.handle.0),
 				&mut info.inner,
 				size_of::<MODULEINFO>() as u32,
 			)
-		};
-		err.ok().map_err(|_| Error::ApiCallFailed)?;
+			.ok()?;
+		}
 		Ok(info)
 	}
 
@@ -94,9 +91,9 @@ impl<'a> Module<'a> {
 			Err(_) => return Err(Error::StringErr),
 		};
 		let address =
-			unsafe { GetProcAddress(HINSTANCE(self.handle.0), PSTR(export_name.as_ptr() as _)) };
+			unsafe { GetProcAddress(HINSTANCE(self.handle.0), PCSTR(export_name.as_ptr() as _)) };
 		match address {
-			None => return Err(Error::StringErr),
+			None => Err(Error::ApiCallNone),
 			Some(a) => Ok(a as _),
 		}
 	}

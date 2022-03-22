@@ -1,9 +1,10 @@
 use crate::{
-	bindings::*,
 	error::{Error, Result},
 	windows_wrapper::process::Process,
 };
-
+use windows::Win32::System::Memory::{
+	VirtualAllocEx, VirtualFreeEx, MEM_RELEASE, PAGE_PROTECTION_FLAGS, VIRTUAL_ALLOCATION_TYPE,
+};
 pub struct VirtualAlloc<'a> {
 	process: &'a Process,
 	address: usize,
@@ -16,7 +17,7 @@ impl<'a> VirtualAlloc<'a> {
 		address: usize,
 		size: usize,
 		alloc_type: VIRTUAL_ALLOCATION_TYPE,
-		protect: PAGE_TYPE,
+		protect: PAGE_PROTECTION_FLAGS,
 	) -> Result<Self> {
 		let address =
 			unsafe { VirtualAllocEx(process.handle(), address as _, size, alloc_type, protect) };
@@ -60,8 +61,8 @@ impl<'a> VirtualAlloc<'a> {
 		&self,
 		offset: usize,
 		size: usize,
-		flag: PAGE_TYPE,
-	) -> Result<PAGE_TYPE> {
+		flag: PAGE_PROTECTION_FLAGS,
+	) -> Result<PAGE_PROTECTION_FLAGS> {
 		self.process
 			.virtual_protect(self.address + offset, size, flag)
 	}

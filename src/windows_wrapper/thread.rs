@@ -1,9 +1,18 @@
-use std::{ffi::c_void, mem::MaybeUninit, ptr::null_mut};
-
 use crate::{
-	bindings::*,
 	error::{Error, Result},
 	windows_wrapper::process::Process,
+};
+use std::ffi::c_void;
+use windows::Win32::{
+	Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_FAILED},
+	System::{
+		Diagnostics::Debug::{GetThreadContext, SetThreadContext, CONTEXT},
+		Threading::{
+			CreateRemoteThreadEx, GetExitCodeThread, GetThreadTimes, OpenThread, ResumeThread,
+			SuspendThread, WaitForSingleObjectEx, LPPROC_THREAD_ATTRIBUTE_LIST,
+			LPTHREAD_START_ROUTINE, THREAD_ACCESS_RIGHTS, THREAD_CREATION_FLAGS,
+		},
+	},
 };
 
 pub type StartRoutine = LPTHREAD_START_ROUTINE;
@@ -13,11 +22,8 @@ pub struct Thread {
 }
 
 impl Thread {
-	pub fn from_tid(access: u32, inherit: bool, tid: u32) -> Result<Self> {
-		let handle = unsafe { OpenThread(access, inherit, tid) };
-		if handle.is_null() {
-			return Err(Error::ApiCallFailed);
-		}
+	pub fn from_tid(access: THREAD_ACCESS_RIGHTS, inherit: bool, tid: u32) -> Result<Self> {
+		let handle = unsafe { OpenThread(access, inherit, tid).ok()? };
 		Ok(Self { handle })
 	}
 
@@ -25,31 +31,30 @@ impl Thread {
 		process: &Process,
 		stack_size: usize,
 		entry: StartRoutine,
-		param: *mut c_void,
+		param: *const c_void,
 		flags: THREAD_CREATION_FLAGS,
 	) -> Result<Self> {
+		let param = param;
 		let mut thread_id = 0;
 		let handle = unsafe {
 			CreateRemoteThreadEx(
 				process.handle(),
 				0 as _,
 				stack_size,
-				Some(entry),
+				entry,
 				param,
 				flags.0,
-				LPPROC_THREAD_ATTRIBUTE_LIST(null_mut()),
+				LPPROC_THREAD_ATTRIBUTE_LIST::default(),
 				&mut thread_id,
 			)
+			.ok()?
 		};
-		if handle.is_null() {
-			return Err(Error::ApiCallFailed)?;
-		}
 		Ok(Self { handle })
 	}
 
-	pub fn wait(&self, milliseconds: u32) -> Result<WAIT_RETURN_CAUSE> {
+	pub fn wait(&self, milliseconds: u32) -> Result<u32> {
 		let cause = unsafe { WaitForSingleObjectEx(self.handle, milliseconds, false) };
-		if cause == WAIT_FAILED {
+		if cause == WAIT_FAILED.0 {
 			return Err(Error::ApiCallFailed);
 		}
 		Ok(cause)
@@ -57,14 +62,15 @@ impl Thread {
 
 	pub fn exit_code(&self) -> Result<u32> {
 		let mut code = 0;
-		let err = unsafe { GetExitCodeThread(self.handle, &mut code) };
-		err.ok().map_err(|_| Error::ApiCallFailed)?;
+		unsafe {
+			GetExitCodeThread(self.handle, &mut code).ok()?;
+		}
 		Ok(code)
 	}
 
 	pub fn thread_times(&self) -> Result<[FILETIME; 4]> {
 		let mut times = [FILETIME::default(); 4];
-		let err = unsafe {
+		unsafe {
 			GetThreadTimes(
 				self.handle,
 				&mut times[0],
@@ -72,8 +78,8 @@ impl Thread {
 				&mut times[2],
 				&mut times[3],
 			)
-		};
-		err.ok().map_err(|_| Error::ApiCallFailed)?;
+			.ok()?;
+		}
 		Ok(times)
 	}
 
@@ -94,25 +100,20 @@ impl Thread {
 	}
 
 	pub fn context(&self, flags: u32) -> Result<CONTEXT> {
-		#[repr(align(16))]
-		struct ContextWrapper {
-			inner: CONTEXT,
-		}
-
-		let mut context = ContextWrapper {
-			inner: unsafe { MaybeUninit::<CONTEXT>::zeroed().assume_init() },
+		let mut context = CONTEXT {
+			ContextFlags: flags,
+			..Default::default()
 		};
-
-		context.inner.ContextFlags = flags;
-
-		let err = unsafe { GetThreadContext(self.handle, &mut context.inner) };
-		err.ok().map_err(|_| Error::ApiCallFailed)?;
-		Ok(context.inner)
+		unsafe {
+			GetThreadContext(self.handle, &mut context).ok()?;
+		}
+		Ok(context)
 	}
 
-	pub fn set_context(&self, context: &mut CONTEXT) -> Result<()> {
-		let err = unsafe { SetThreadContext(self.handle, context) };
-		err.ok().map_err(|_| Error::ApiCallFailed)?;
+	pub fn set_context(&self, context: &CONTEXT) -> Result<()> {
+		unsafe {
+			SetThreadContext(self.handle, context).ok()?;
+		}
 		Ok(())
 	}
 }
