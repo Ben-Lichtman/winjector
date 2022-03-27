@@ -2,7 +2,7 @@ use crate::{
 	error::{Error, Result},
 	windows_wrapper::process::Process,
 };
-use std::ffi::c_void;
+use std::{ffi::c_void, mem::transmute};
 use windows::Win32::{
 	Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_FAILED},
 	System::{
@@ -30,18 +30,19 @@ impl Thread {
 	pub fn spawn_remote(
 		process: &Process,
 		stack_size: usize,
-		entry: StartRoutine,
+		entry: usize,
 		param: *const c_void,
 		flags: THREAD_CREATION_FLAGS,
 	) -> Result<Self> {
 		let param = param;
+		let entry = unsafe { transmute::<_, StartRoutine>(entry) };
 		let mut thread_id = 0;
 		let handle = unsafe {
 			CreateRemoteThreadEx(
 				process.handle(),
 				0 as _,
 				stack_size,
-				entry,
+				entry as StartRoutine,
 				param,
 				flags.0,
 				LPPROC_THREAD_ATTRIBUTE_LIST::default(),

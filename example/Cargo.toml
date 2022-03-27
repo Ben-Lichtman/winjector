@@ -1,0 +1,15 @@
+[package]
+name = "example"
+version = "0.2.0"
+authors = ["Ben-Lichtman"]
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+debug = true
+overflow-checks = true
+
+[dependencies]
+loader = { path = "../loader" }
