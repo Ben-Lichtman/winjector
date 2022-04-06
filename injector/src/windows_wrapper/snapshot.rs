@@ -1,6 +1,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 use crate::error::Result;
+use std::mem::size_of;
 use windows::Win32::{
 	Foundation::{CloseHandle, HANDLE},
 	System::Diagnostics::ToolHelp::{
@@ -48,9 +49,11 @@ pub struct ThreadEntryIter<'a> {
 
 impl<'a> ThreadEntryIter<'a> {
 	pub fn new(snapshot: &'a Snapshot) -> Self {
+		let mut entry = THREADENTRY32::default();
+		entry.dwSize = size_of::<THREADENTRY32>() as _;
 		Self {
 			snapshot,
-			entry: THREADENTRY32::default(),
+			entry,
 			done_first: false,
 		}
 	}
@@ -64,14 +67,14 @@ impl<'a> Iterator for ThreadEntryIter<'a> {
 			false => {
 				self.done_first = true;
 				unsafe {
-					Thread32First(self.snapshot.handle, &mut self.entry as _)
+					Thread32First(self.snapshot.handle, &mut self.entry)
 						.ok()
 						.ok()
 						.map(|_| self.entry)
 				}
 			}
 			true => unsafe {
-				Thread32Next(self.snapshot.handle, &mut self.entry as _)
+				Thread32Next(self.snapshot.handle, &mut self.entry)
 					.ok()
 					.ok()
 					.map(|_| self.entry)

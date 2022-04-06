@@ -222,8 +222,8 @@ fn load() -> (*mut u8, *mut u8) {
 
 	// Map sections
 	pe.section_headers.iter().for_each(|section| {
-		let dest = allocated_ptr.wrapping_add(section.virtual_address.get(LittleEndian) as _);
-		let src = pe_base.wrapping_add(section.pointer_to_raw_data.get(LittleEndian) as _);
+		let dest = unsafe { allocated_ptr.add(section.virtual_address.get(LittleEndian) as _) };
+		let src = unsafe { pe_base.add(section.pointer_to_raw_data.get(LittleEndian) as _) };
 		let size = section.size_of_raw_data.get(LittleEndian) as _;
 		simple_memcpy(dest, src, size);
 	});
@@ -233,17 +233,14 @@ fn load() -> (*mut u8, *mut u8) {
 	for idt in import_table.import_descriptors {
 		// Load the library
 		let name_rva = idt.name.get(LittleEndian) as usize;
-		let loaded_library_base =
-			unsafe { loadlibrarya(allocated_ptr.wrapping_add(name_rva)) } as *mut u8;
+		let loaded_library_base = unsafe { loadlibrarya(allocated_ptr.add(name_rva)) } as *mut u8;
 		assert!(!loaded_library_base.is_null());
 
 		let ilt_rva = idt.original_first_thunk.get(LittleEndian) as usize;
 		let iat_rva = idt.first_thunk.get(LittleEndian) as usize;
 
-		let mut ilt_ptr = allocated_ptr
-			.wrapping_add(ilt_rva)
-			.cast::<ImageThunkData64>();
-		let mut iat_ptr = allocated_ptr.wrapping_add(iat_rva).cast::<usize>();
+		let mut ilt_ptr = unsafe { allocated_ptr.add(ilt_rva).cast::<ImageThunkData64>() };
+		let mut iat_ptr = unsafe { allocated_ptr.add(iat_rva).cast::<usize>() };
 
 		// Look through each entry in the ILT until we find a null entry
 		while unsafe { ilt_ptr.read().raw() != 0 } {
@@ -265,9 +262,7 @@ fn load() -> (*mut u8, *mut u8) {
 					let address_rva = ilt_entry.address() as _;
 
 					// Get the name of the function
-					let string_va = allocated_ptr
-						.wrapping_add(address_rva)
-						.wrapping_add(size_of::<u16>());
+					let string_va = unsafe { allocated_ptr.add(address_rva).add(size_of::<u16>()) };
 
 					// Find matching function in loaded library
 					unsafe {
@@ -280,8 +275,8 @@ fn load() -> (*mut u8, *mut u8) {
 			unsafe { *iat_ptr = function_va as usize };
 
 			// Advance to the next entry
-			ilt_ptr = ilt_ptr.wrapping_add(1);
-			iat_ptr = iat_ptr.wrapping_add(1);
+			ilt_ptr = unsafe { ilt_ptr.add(1) };
+			iat_ptr = unsafe { iat_ptr.add(1) };
 		}
 	}
 
@@ -296,7 +291,7 @@ fn load() -> (*mut u8, *mut u8) {
 
 	// Iterate through the relocation table
 	let reloc_start_address =
-		allocated_ptr.wrapping_add(relocations.virtual_address.get(LittleEndian) as _);
+		unsafe { allocated_ptr.add(relocations.virtual_address.get(LittleEndian) as _) };
 	let reloc_size_bytes = relocations.size.get(LittleEndian) as _;
 
 	let mut reloc_byte_slice =
@@ -307,7 +302,7 @@ fn load() -> (*mut u8, *mut u8) {
 		let rva = u32::from_le_bytes([a, b, c, d]) as usize;
 		let relocs_bytes = u32::from_le_bytes([e, f, g, h]) as usize - 8;
 
-		let block_va = allocated_ptr.wrapping_add(rva);
+		let block_va = unsafe { allocated_ptr.add(rva) };
 
 		// Loop over the relocations in this block
 		let (mut relocs_slice, rest) = rest.split_at(relocs_bytes);
@@ -316,7 +311,7 @@ fn load() -> (*mut u8, *mut u8) {
 			let reloc_type = (reloc & 0xf000) >> 0xc;
 			let reloc_offset = reloc & 0x0fff;
 
-			let reloc_va = block_va.wrapping_add(reloc_offset as _);
+			let reloc_va = unsafe { block_va.add(reloc_offset as _) };
 
 			// Apply the relocation
 			match reloc_type {
@@ -352,7 +347,7 @@ fn load() -> (*mut u8, *mut u8) {
 	// Set section permissions
 	pe.section_headers.iter().for_each(|section| {
 		let virtual_address =
-			allocated_ptr.wrapping_add(section.virtual_address.get(LittleEndian) as _);
+			unsafe { allocated_ptr.add(section.virtual_address.get(LittleEndian) as _) };
 		let virtual_size = section.virtual_size.get(LittleEndian) as _;
 
 		// Change permissions
@@ -381,12 +376,14 @@ fn load() -> (*mut u8, *mut u8) {
 		};
 	});
 
-	let entry_point = allocated_ptr.wrapping_add(
-		pe.nt_header
-			.optional_header()
-			.address_of_entry_point
-			.get(LittleEndian) as _,
-	);
+	let entry_point = unsafe {
+		allocated_ptr.add(
+			pe.nt_header
+				.optional_header()
+				.address_of_entry_point
+				.get(LittleEndian) as _,
+		)
+	};
 
 	// We must flush the instruction cache to avoid stale code being used which was updated by our relocation processing
 	unsafe { ntflushinstructioncache(-1 as _, null_mut(), 0) };

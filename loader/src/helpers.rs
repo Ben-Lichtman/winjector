@@ -41,6 +41,6 @@ pub fn simple_memcpy(dest: *mut u8, src: *mut u8, len: usize) {
 	let n_bytes = len; // Iterate backwards to avoid optimizing..?
 	for i in (0..n_bytes).rev() {
 		compiler_fence(Ordering::Acquire);
-		unsafe { *dest.wrapping_add(i) = *src.wrapping_add(i) };
+		unsafe { *dest.add(i) = *src.add(i) };
 	}
 }

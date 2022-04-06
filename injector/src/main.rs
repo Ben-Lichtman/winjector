@@ -3,17 +3,21 @@
 use object::{read::pe::PeFile64, Object};
 use std::fs::read;
 use windows::Win32::System::{
+	Diagnostics::ToolHelp::TH32CS_SNAPTHREAD,
 	Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_READWRITE},
 	ProcessStatus::LIST_MODULES_ALL,
-	Threading::THREAD_CREATE_RUN_IMMEDIATELY,
+	Threading::{
+		THREAD_CREATE_RUN_IMMEDIATELY, THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION,
+		THREAD_SET_CONTEXT, THREAD_SUSPEND_RESUME,
+	},
 };
 use winjector::{
 	helpers::{get_process_by_file_name, rva2offset},
-	windows_wrapper::thread::Thread,
+	windows_wrapper::{snapshot::ThreadEntryIter, thread::Thread},
 };
 
 fn reflective() {
-	let target_name = "notepad.exe";
+	let target_name = "Calculator.exe";
 	let dll_path = r"C:\Users\Ben\dev\rust\winjector\target\release\example.dll";
 	let loader = "reflective_loader";
 
@@ -70,8 +74,10 @@ fn reflective() {
 	allocated.write_memory(&dll_raw, 0).unwrap();
 	println!("=> Wrote {:x}B DLL", dll_raw.len());
 
-	// Create remote thread starting at the loader function
 	let entry_point = allocated.address() + loader_addr_offset;
+	println!("=> Entry point {:x}", entry_point);
+
+	// Create remote thread starting at the loader function
 	let thread = Thread::spawn_remote(
 		&target,
 		0,
@@ -82,13 +88,60 @@ fn reflective() {
 	.unwrap();
 	println!("=> Spawned thread at address {:x}", entry_point);
 
-	thread.wait(0).unwrap();
+	// // Create snapshot of process
+	// let snap = target.snapshot(TH32CS_SNAPTHREAD).unwrap();
+	// // Use snapshot to get the main thread id of the process
+	// let mut best_tid = 0x0;
+	// let mut best_time = 0xffffffffffffffff;
+	// for thread_entry in snap.thread_entries() {
+	// 	if thread_entry.th32OwnerProcessID != target_pid {
+	// 		continue;
+	// 	}
+	// 	let thread =
+	// 		Thread::from_tid(THREAD_QUERY_INFORMATION, true, thread_entry.th32ThreadID).unwrap();
+	// 	let thread_times = thread.thread_times().unwrap();
+	// 	let time_int =
+	// 		thread_times[0].dwLowDateTime as u64 | ((thread_times[0].dwHighDateTime as u64) << 32);
+	// 	if time_int < best_time {
+	// 		best_time = time_int;
+	// 		best_tid = thread_entry.th32ThreadID;
+	// 	}
+	// }
+	// assert!(best_tid != 0);
 
-	panic!("DONE")
+	// println!("=> Found main thread with id {}", best_tid);
+
+	// let main_thread = Thread::from_tid(
+	// 	THREAD_SUSPEND_RESUME | THREAD_SET_CONTEXT | THREAD_GET_CONTEXT,
+	// 	true,
+	// 	best_tid,
+	// )
+	// .unwrap();
+
+	// // Now suspend the main thread
+	// main_thread.suspend().unwrap();
+
+	// // monkey with thread context
+	// let mut context = main_thread.context(0x100000 | 0x00000001).unwrap();
+	// let old_rip = context.Rip;
+	// println!("=> Old RIP {:x}", old_rip);
+
+	// context.ContextFlags |= 0x00100000 | 0x00000001;
+	// context.Rip = entry_point as _;
+
+	// main_thread.set_context(&mut context).unwrap();
+
+	// target
+	// 	.flush_instruction_cache(allocated.address(), allocated.size())
+	// 	.unwrap();
+
+	// main_thread.resume().unwrap();
+
+	// panic!("DONE")
 }
 
 fn conventional() {
-	let target_name = "notepad.exe";
+	let target_name = "Calculator.exe";
 	let dll_path = r"target\release\example.dll";
 	let module = "KERNEL32.DLL";
 	let function = "LoadLibraryA";

@@ -18,7 +18,7 @@ pub fn rva2offset<'a>(pe: &'a impl Object<'a, 'a>, rva: usize) -> Option<usize> 
 pub fn get_process_by_file_name(name: &str) -> Vec<(String, Process)> {
 	let pids = enum_process_ids().unwrap();
 	pids.into_iter()
-		.filter_map(|pid| Process::from_pid(pid, PROCESS_ALL_ACCESS, false).ok())
+		.filter_map(|pid| Process::from_pid(pid, PROCESS_ALL_ACCESS, true).ok())
 		.map(|p| {
 			let fname = p.get_file_name().unwrap();
 			let fname = String::from_utf8(fname).unwrap();

@@ -29,7 +29,7 @@ impl PeHeaders {
 		if nt_header_offset > 1024 {
 			return None;
 		}
-		let nt_header_ptr = address.wrapping_add(nt_header_offset);
+		let nt_header_ptr = unsafe { address.add(nt_header_offset) };
 		let nt_header = unsafe { &mut *nt_header_ptr.cast::<ImageNtHeaders64>() };
 		if nt_header.signature.get(LittleEndian) != IMAGE_NT_SIGNATURE {
 			return None;
@@ -37,7 +37,7 @@ impl PeHeaders {
 		if !nt_header.is_valid_optional_magic() {
 			return None;
 		}
-		let data_directories_ptr = nt_header_ptr.wrapping_add(size_of::<ImageNtHeaders64>());
+		let data_directories_ptr = unsafe { nt_header_ptr.add(size_of::<ImageNtHeaders64>()) };
 		let num_data_directories = nt_header.optional_header().number_of_rva_and_sizes() as _;
 		let data_directories = unsafe {
 			slice::from_raw_parts_mut(
@@ -45,8 +45,9 @@ impl PeHeaders {
 				num_data_directories,
 			)
 		};
-		let section_headers_ptr = data_directories_ptr
-			.wrapping_add(num_data_directories * size_of::<ImageDataDirectory>());
+		let section_headers_ptr = unsafe {
+			data_directories_ptr.add(num_data_directories * size_of::<ImageDataDirectory>())
+		};
 		let num_section_headers = nt_header.file_header().number_of_sections.get(LittleEndian) as _;
 		let section_headers = unsafe {
 			slice::from_raw_parts_mut(
@@ -66,7 +67,7 @@ impl PeHeaders {
 	pub fn export_table_mem(&self, image_base: *mut u8) -> Option<ExportTable> {
 		let export_table_data_dir = self.data_directories.get(IMAGE_DIRECTORY_ENTRY_EXPORT)?;
 		let export_table_rva = export_table_data_dir.virtual_address.get(LittleEndian);
-		let export_table_ptr = image_base.wrapping_add(export_table_rva as _);
+		let export_table_ptr = unsafe { image_base.add(export_table_rva as _) };
 		Some(ExportTable::parse(export_table_ptr, export_table_rva as _))
 	}
 
@@ -74,7 +75,7 @@ impl PeHeaders {
 		let import_table_data_dir = self.data_directories.get(IMAGE_DIRECTORY_ENTRY_IMPORT)?;
 		let import_table_rva = import_table_data_dir.virtual_address.get(LittleEndian);
 		let import_table_size = import_table_data_dir.size.get(LittleEndian);
-		let import_table_ptr = image_base.wrapping_add(import_table_rva as _);
+		let import_table_ptr = unsafe { image_base.add(import_table_rva as _) };
 		Some(ImportTable::parse(import_table_ptr, import_table_size as _))
 	}
 }
@@ -91,25 +92,31 @@ impl ExportTable {
 		let export_directory_ptr = address;
 		let export_directory = unsafe { &mut *export_directory_ptr.cast::<ImageExportDirectory>() };
 
-		let address_table_ptr = address
-			.wrapping_add(export_directory.address_of_functions.get(LittleEndian) as _)
-			.wrapping_sub(rva)
-			.cast::<u32>();
+		let address_table_ptr = unsafe {
+			address
+				.add(export_directory.address_of_functions.get(LittleEndian) as _)
+				.wrapping_sub(rva)
+				.cast::<u32>()
+		};
 		let address_table_len = export_directory.number_of_functions.get(LittleEndian) as _;
 		let address_table =
 			unsafe { slice::from_raw_parts_mut(address_table_ptr, address_table_len) };
 
-		let name_table_ptr = address
-			.wrapping_add(export_directory.address_of_names.get(LittleEndian) as _)
-			.wrapping_sub(rva)
-			.cast::<u32>();
+		let name_table_ptr = unsafe {
+			address
+				.add(export_directory.address_of_names.get(LittleEndian) as _)
+				.wrapping_sub(rva)
+				.cast::<u32>()
+		};
 		let name_table_len = export_directory.number_of_names.get(LittleEndian) as _;
 		let name_table = unsafe { slice::from_raw_parts_mut(name_table_ptr, name_table_len) };
 
-		let ordinal_table_ptr = address
-			.wrapping_add(export_directory.address_of_name_ordinals.get(LittleEndian) as _)
-			.wrapping_sub(rva)
-			.cast::<u16>();
+		let ordinal_table_ptr = unsafe {
+			address
+				.add(export_directory.address_of_name_ordinals.get(LittleEndian) as _)
+				.wrapping_sub(rva)
+				.cast::<u16>()
+		};
 		let ordinal_table_len = export_directory.number_of_names.get(LittleEndian) as _;
 		let ordinal_table =
 			unsafe { slice::from_raw_parts_mut(ordinal_table_ptr, ordinal_table_len) };
@@ -131,10 +138,10 @@ impl ExportTable {
 
 	pub fn iter_string_addr(&self, image_base: *mut u8) -> impl Iterator<Item = (&CStr, *mut u8)> {
 		self.iter_name_ord().map(move |(name_rva, ord)| {
-			let string_ptr = image_base.wrapping_add(name_rva as _);
+			let string_ptr = unsafe { image_base.add(name_rva as _) };
 			let string = unsafe { CStr::from_ptr(string_ptr as _) };
 			let address_rva = unsafe { *self.address_table.get_unchecked(ord as usize) };
-			let address = image_base.wrapping_add(address_rva as _);
+			let address = unsafe { image_base.add(address_rva as _) };
 			(string, address)
 		})
 	}
