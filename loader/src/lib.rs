@@ -14,6 +14,7 @@ use core::{
 	ptr::{null, null_mut},
 	slice,
 };
+use cstr_core::CStr;
 use ntapi::{
 	ntldr::LDR_DATA_TABLE_ENTRY,
 	ntpebteb::TEB,
@@ -71,7 +72,7 @@ fn find_pe(start: usize) -> Option<(*mut u8, PeHeaders)> {
 	}
 }
 
-fn find_loaded_module_base(ldr: &PEB_LDR_DATA, hash: u32) -> Option<*mut u8> {
+fn find_loaded_module_by_hash(ldr: &PEB_LDR_DATA, hash: u32) -> Option<*mut u8> {
 	// Get initial entry in the list
 	let mut ldr_data_ptr = ldr.InLoadOrderModuleList.Flink as *mut LDR_DATA_TABLE_ENTRY;
 	while !ldr_data_ptr.is_null() {
@@ -83,6 +84,45 @@ fn find_loaded_module_base(ldr: &PEB_LDR_DATA, hash: u32) -> Option<*mut u8> {
 			unsafe { slice::from_raw_parts(dll_name.Buffer, dll_name.Length as usize / 2) };
 
 		if fnv1a_hash_32_wstr(dll_name_wstr) != hash {
+			// Go to the next entry
+			ldr_data_ptr = ldr_data.InLoadOrderLinks.Flink as *mut LDR_DATA_TABLE_ENTRY;
+			continue;
+		}
+
+		// Return the base address for this DLL
+		return Some(ldr_data.DllBase as _);
+	}
+	None
+}
+
+fn find_loaded_module_by_ascii(ldr: &PEB_LDR_DATA, ascii: *const i8) -> Option<*mut u8> {
+	let ascii = unsafe { CStr::from_ptr(ascii) };
+
+	// Get initial entry in the list
+	let mut ldr_data_ptr = ldr.InLoadOrderModuleList.Flink as *mut LDR_DATA_TABLE_ENTRY;
+	while !ldr_data_ptr.is_null() {
+		let ldr_data = unsafe { &*ldr_data_ptr };
+
+		// Make a slice of wchars from the base name
+		let dll_name = ldr_data.BaseDllName;
+		let dll_name_wstr =
+			unsafe { slice::from_raw_parts(dll_name.Buffer, dll_name.Length as usize / 2) };
+
+		// Check if the lengths are equal
+		if dll_name_wstr.len() != ascii.to_bytes().len() {
+			// Go to the next entry
+			ldr_data_ptr = ldr_data.InLoadOrderLinks.Flink as *mut LDR_DATA_TABLE_ENTRY;
+			continue;
+		}
+
+		// Check if they are equal
+		if dll_name_wstr
+			.iter()
+			.copied()
+			.zip(ascii.to_bytes().iter().copied())
+			.map(|(a, b)| (a, b as u16))
+			.all(|(a, b)| a == b)
+		{
 			// Go to the next entry
 			ldr_data_ptr = ldr_data.InLoadOrderLinks.Flink as *mut LDR_DATA_TABLE_ENTRY;
 			continue;
@@ -122,10 +162,10 @@ fn load() -> (*mut u8, *mut u8) {
 	let peb_ldr = unsafe { &*peb.Ldr };
 
 	// Traverse loaded modules to find kernel32.dll and ntdll.dll
-	let kernel32_base = find_loaded_module_base(peb_ldr, KERNEL32_HASH).unwrap();
+	let kernel32_base = find_loaded_module_by_hash(peb_ldr, KERNEL32_HASH).unwrap();
 	let kernel32 = PeHeaders::parse(kernel32_base).unwrap();
 
-	let ntdll_base = find_loaded_module_base(peb_ldr, NTDLL_HASH).unwrap();
+	let ntdll_base = find_loaded_module_by_hash(peb_ldr, NTDLL_HASH).unwrap();
 	let ntdll = PeHeaders::parse(ntdll_base).unwrap();
 
 	// Locate the export table for kernel32.dll
@@ -233,7 +273,14 @@ fn load() -> (*mut u8, *mut u8) {
 	for idt in import_table.import_descriptors {
 		// Load the library
 		let name_rva = idt.name.get(LittleEndian) as usize;
-		let loaded_library_base = unsafe { loadlibrarya(allocated_ptr.add(name_rva)) } as *mut u8;
+		let library_name = unsafe { allocated_ptr.add(name_rva) };
+
+		// Check if the library is already loaded
+		let loaded_library_base = match find_loaded_module_by_ascii(peb_ldr, library_name as _) {
+			Some(base) => base,
+			None => unsafe { loadlibrarya(library_name) as *mut u8 },
+		};
+
 		assert!(!loaded_library_base.is_null());
 
 		let ilt_rva = idt.original_first_thunk.get(LittleEndian) as usize;
