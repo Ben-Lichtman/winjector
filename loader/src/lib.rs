@@ -1,9 +1,12 @@
 #![no_std]
+#![feature(slice_split_at_unchecked)]
 
+mod error;
 mod helpers;
 mod structures;
 
 use crate::{
+	error::{Error, Result},
 	helpers::{fnv1a_hash_32, fnv1a_hash_32_wstr, simple_memcpy},
 	structures::{ExportTable, PeHeaders},
 };
@@ -13,8 +16,10 @@ use core::{
 	mem::{size_of, transmute},
 	ptr::{null, null_mut},
 	slice,
+	str::from_utf8_unchecked,
 };
 use cstr_core::CStr;
+use helpers::{ascii_ascii_eq, ascii_wstr_eq};
 use ntapi::{
 	ntldr::LDR_DATA_TABLE_ENTRY,
 	ntpebteb::TEB,
@@ -40,7 +45,7 @@ use wchar::wch;
 use windows_sys::{
 	core::PCSTR,
 	Win32::{
-		Foundation::{BOOL, FARPROC, HINSTANCE},
+		Foundation::{BOOL, HINSTANCE},
 		System::Memory::{
 			MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
 			PAGE_EXECUTE_WRITECOPY, PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE,
@@ -54,25 +59,26 @@ const NTDLL_HASH: u32 = fnv1a_hash_32_wstr(wch!("ntdll.dll"));
 
 const VIRTUALALLOC_HASH: u32 = fnv1a_hash_32("VirtualAlloc".as_bytes());
 const LOADLIBRARYA_HASH: u32 = fnv1a_hash_32("LoadLibraryA".as_bytes());
-const GETPROCADDRESS_HASH: u32 = fnv1a_hash_32("GetProcAddress".as_bytes());
 const NTFLUSHINSTRUCTIONCACHE_HASH: u32 = fnv1a_hash_32("NtFlushInstructionCache".as_bytes());
 const VIRTUALPROTECT: u32 = fnv1a_hash_32("VirtualProtect".as_bytes());
 
-fn find_pe(start: usize) -> Option<(*mut u8, PeHeaders)> {
+#[inline(never)]
+fn find_pe(start: usize) -> Result<(*mut u8, PeHeaders)> {
 	let mut page_aligned = start & !0xfff;
 	loop {
 		if page_aligned == 0 {
-			return None;
+			return Err(Error::SelfFind);
 		}
 
 		match PeHeaders::parse(page_aligned as _) {
-			Some(pe) => break Some((page_aligned as _, pe)),
-			None => page_aligned -= 0x1000,
+			Ok(pe) => break Ok((page_aligned as _, pe)),
+			Err(_) => page_aligned -= 0x1000,
 		}
 	}
 }
 
-fn find_loaded_module_by_hash(ldr: &PEB_LDR_DATA, hash: u32) -> Option<*mut u8> {
+#[inline(never)]
+fn find_loaded_module_by_hash(ldr: &PEB_LDR_DATA, hash: u32) -> Result<*mut u8> {
 	// Get initial entry in the list
 	let mut ldr_data_ptr = ldr.InLoadOrderModuleList.Flink as *mut LDR_DATA_TABLE_ENTRY;
 	while !ldr_data_ptr.is_null() {
@@ -90,12 +96,13 @@ fn find_loaded_module_by_hash(ldr: &PEB_LDR_DATA, hash: u32) -> Option<*mut u8> 
 		}
 
 		// Return the base address for this DLL
-		return Some(ldr_data.DllBase as _);
+		return Ok(ldr_data.DllBase as _);
 	}
-	None
+	Err(Error::ModuleByHash)
 }
 
-fn find_loaded_module_by_ascii(ldr: &PEB_LDR_DATA, ascii: *const i8) -> Option<*mut u8> {
+#[inline(never)]
+fn find_loaded_module_by_ascii(ldr: &PEB_LDR_DATA, ascii: *const i8) -> Result<*mut u8> {
 	let ascii = unsafe { CStr::from_ptr(ascii) };
 
 	// Get initial entry in the list
@@ -108,45 +115,63 @@ fn find_loaded_module_by_ascii(ldr: &PEB_LDR_DATA, ascii: *const i8) -> Option<*
 		let dll_name_wstr =
 			unsafe { slice::from_raw_parts(dll_name.Buffer, dll_name.Length as usize / 2) };
 
-		// Check if the lengths are equal
-		if dll_name_wstr.len() != ascii.to_bytes().len() {
-			// Go to the next entry
-			ldr_data_ptr = ldr_data.InLoadOrderLinks.Flink as *mut LDR_DATA_TABLE_ENTRY;
-			continue;
+		if ascii_wstr_eq(ascii, dll_name_wstr) {
+			return Ok(ldr_data.DllBase as _);
 		}
 
-		// Check if they are equal
-		if dll_name_wstr
-			.iter()
-			.copied()
-			.zip(ascii.to_bytes().iter().copied())
-			.map(|(a, b)| (a, b as u16))
-			.all(|(a, b)| a == b)
-		{
-			// Go to the next entry
-			ldr_data_ptr = ldr_data.InLoadOrderLinks.Flink as *mut LDR_DATA_TABLE_ENTRY;
-			continue;
-		}
-
-		// Return the base address for this DLL
-		return Some(ldr_data.DllBase as _);
+		// Go to the next entry
+		ldr_data_ptr = ldr_data.InLoadOrderLinks.Flink as *mut LDR_DATA_TABLE_ENTRY;
 	}
-	None
+	Err(Error::ModuleByAscii)
 }
 
-fn find_export_va(table: &ExportTable, base: *mut u8, hash: u32) -> Option<*mut u8> {
+#[inline(never)]
+fn find_export_by_hash(table: &ExportTable, base: *mut u8, hash: u32) -> Result<*mut u8> {
 	table
 		.iter_string_addr(base)
 		.find(|(name, _)| fnv1a_hash_32(name.to_bytes()) == hash)
 		.map(|(_, a)| a)
+		.ok_or(Error::ExportVaByHash)
 }
 
-// #[inline(never)]
-fn load() -> (*mut u8, *mut u8) {
+#[inline(never)]
+fn find_export_by_ascii(table: &ExportTable, base: *mut u8, string: &CStr) -> Result<*mut u8> {
+	table
+		.iter_string_addr(base)
+		.find(|(name, _)| ascii_ascii_eq(name.to_bytes(), string.to_bytes()))
+		.map(|(_, a)| a)
+		.ok_or(Error::ExportVaByAscii)
+}
+
+#[inline(never)]
+pub fn get_library_base(
+	peb_ldr: &PEB_LDR_DATA,
+	library_name: *const u8,
+	loadlibrarya: unsafe extern "system" fn(*const u8) -> isize,
+) -> Result<*mut u8> {
+	let loaded_library_base = match find_loaded_module_by_ascii(peb_ldr, library_name as _) {
+		Ok(base) => base,
+		Err(_) => {
+			// Call loadlibrarya and then try find it again
+			let module_handle = unsafe { loadlibrarya(library_name) as *mut u8 };
+			if module_handle.is_null() {
+				return Err(Error::LoadLibrary);
+			}
+			find_loaded_module_by_ascii(peb_ldr, library_name as _)?
+		}
+	};
+	if loaded_library_base.is_null() {
+		return Err(Error::LoadLibrary);
+	}
+	Ok(loaded_library_base)
+}
+
+#[inline(never)]
+fn load() -> Result<(*mut u8, *mut u8)> {
 	let rip: usize;
 	unsafe { asm!("lea {rip}, [rip]", rip = out(reg) rip) };
 
-	let (pe_base, pe) = find_pe(rip).unwrap();
+	let (pe_base, pe) = find_pe(rip)?;
 
 	// Locate other important data structures
 	let teb: *mut TEB;
@@ -162,18 +187,18 @@ fn load() -> (*mut u8, *mut u8) {
 	let peb_ldr = unsafe { &*peb.Ldr };
 
 	// Traverse loaded modules to find kernel32.dll and ntdll.dll
-	let kernel32_base = find_loaded_module_by_hash(peb_ldr, KERNEL32_HASH).unwrap();
-	let kernel32 = PeHeaders::parse(kernel32_base).unwrap();
+	let kernel32_base = find_loaded_module_by_hash(peb_ldr, KERNEL32_HASH)?;
+	let kernel32 = PeHeaders::parse(kernel32_base)?;
 
-	let ntdll_base = find_loaded_module_by_hash(peb_ldr, NTDLL_HASH).unwrap();
-	let ntdll = PeHeaders::parse(ntdll_base).unwrap();
+	let ntdll_base = find_loaded_module_by_hash(peb_ldr, NTDLL_HASH)?;
+	let ntdll = PeHeaders::parse(ntdll_base)?;
 
 	// Locate the export table for kernel32.dll
-	let kernel32_export_table = kernel32.export_table_mem(kernel32_base).unwrap();
+	let kernel32_export_table = kernel32.export_table_mem(kernel32_base)?;
 
 	// Find the required function locations in kernel32.dll
 	let virtualalloc =
-		find_export_va(&kernel32_export_table, kernel32_base, VIRTUALALLOC_HASH).unwrap();
+		find_export_by_hash(&kernel32_export_table, kernel32_base, VIRTUALALLOC_HASH)?;
 	let virtualalloc = unsafe {
 		transmute::<
 			_,
@@ -187,20 +212,13 @@ fn load() -> (*mut u8, *mut u8) {
 	};
 
 	let loadlibararya =
-		find_export_va(&kernel32_export_table, kernel32_base, LOADLIBRARYA_HASH).unwrap();
+		find_export_by_hash(&kernel32_export_table, kernel32_base, LOADLIBRARYA_HASH)?;
 	let loadlibrarya = unsafe {
 		transmute::<_, unsafe extern "system" fn(lplibfilename: PCSTR) -> HINSTANCE>(loadlibararya)
 	};
-	let getprocaddress =
-		find_export_va(&kernel32_export_table, kernel32_base, GETPROCADDRESS_HASH).unwrap();
-	let getprocaddress = unsafe {
-		transmute::<_, unsafe extern "system" fn(hmodule: HINSTANCE, lpprocname: PCSTR) -> FARPROC>(
-			getprocaddress,
-		)
-	};
 
 	let virtualprotect =
-		find_export_va(&kernel32_export_table, kernel32_base, VIRTUALPROTECT).unwrap();
+		find_export_by_hash(&kernel32_export_table, kernel32_base, VIRTUALPROTECT)?;
 	let virtualprotect = unsafe {
 		transmute::<
 			_,
@@ -214,15 +232,14 @@ fn load() -> (*mut u8, *mut u8) {
 	};
 
 	// Locate the export table for ntdll.dll
-	let ntdll_export_table = ntdll.export_table_mem(ntdll_base).unwrap();
+	let ntdll_export_table = ntdll.export_table_mem(ntdll_base)?;
 
 	// Find the required function locations in ntdll.dll
-	let ntflushinstructioncache = find_export_va(
+	let ntflushinstructioncache = find_export_by_hash(
 		&ntdll_export_table,
 		ntdll_base,
 		NTFLUSHINSTRUCTIONCACHE_HASH,
-	)
-	.unwrap();
+	)?;
 	let ntflushinstructioncache = unsafe {
 		transmute::<
 			_,
@@ -250,7 +267,9 @@ fn load() -> (*mut u8, *mut u8) {
 		)
 	}
 	.cast::<u8>();
-	assert!(allocated_ptr != null_mut());
+	if allocated_ptr.is_null() {
+		return Err(Error::VirtualAlloc);
+	}
 
 	// Copy over header data
 	let header_size = pe
@@ -269,19 +288,18 @@ fn load() -> (*mut u8, *mut u8) {
 	});
 
 	// Process import table
-	let import_table = pe.import_table_mem(allocated_ptr).unwrap();
+	let import_table = pe.import_table_mem(allocated_ptr)?;
 	for idt in import_table.import_descriptors {
 		// Load the library
 		let name_rva = idt.name.get(LittleEndian) as usize;
 		let library_name = unsafe { allocated_ptr.add(name_rva) };
 
-		// Check if the library is already loaded
-		let loaded_library_base = match find_loaded_module_by_ascii(peb_ldr, library_name as _) {
-			Some(base) => base,
-			None => unsafe { loadlibrarya(library_name) as *mut u8 },
-		};
+		// Load library if it is not already loaded and get the base
+		let loaded_library_base = get_library_base(peb_ldr, library_name as _, loadlibrarya)?;
 
-		assert!(!loaded_library_base.is_null());
+		// Find the exports of the loaded library
+		let loaded_library = PeHeaders::parse(loaded_library_base)?;
+		let loaded_library_exports = loaded_library.export_table_mem(loaded_library_base)?;
 
 		let ilt_rva = idt.original_first_thunk.get(LittleEndian) as usize;
 		let iat_rva = idt.first_thunk.get(LittleEndian) as usize;
@@ -293,16 +311,22 @@ fn load() -> (*mut u8, *mut u8) {
 		while unsafe { ilt_ptr.read().raw() != 0 } {
 			let ilt_entry = unsafe { ilt_ptr.read() };
 
-			let function_va = match ilt_entry.is_ordinal() {
+			// Resolve the function VA - taking forwarding into account
+
+			// First step - get an address from direct dependency
+			let mut resolved_address = match ilt_entry.is_ordinal() {
 				true => {
 					// Load from ordinal
 					let ordinal = ilt_entry.ordinal();
 
 					// Find matching function in loaded library
-					unsafe {
-						getprocaddress(loaded_library_base as _, ordinal as _)
-							.expect("getprocaddress failed")
-					}
+					let export_rva = unsafe {
+						*loaded_library_exports
+							.address_table
+							.get_unchecked(ordinal as usize)
+					};
+
+					unsafe { loaded_library_base.add(export_rva as _) }
 				}
 				false => {
 					// Load from name
@@ -310,16 +334,110 @@ fn load() -> (*mut u8, *mut u8) {
 
 					// Get the name of the function
 					let string_va = unsafe { allocated_ptr.add(address_rva).add(size_of::<u16>()) };
+					let string = unsafe { CStr::from_ptr(string_va as _) };
 
 					// Find matching function in loaded library
-					unsafe {
-						getprocaddress(loaded_library_base as _, string_va)
-							.expect("getprocaddress failed")
-					}
+					find_export_by_ascii(&loaded_library_exports, loaded_library_base, string)?
 				}
 			};
+
+			// Forwarding
+			let mut current_export_start = loaded_library_exports.start_address;
+			let mut current_export_end =
+				unsafe { current_export_start.add(loaded_library_exports.size as _) };
+			let function_va = loop {
+				let mut buffer = [0u8; 64];
+
+				if !(current_export_start <= resolved_address
+					&& resolved_address < current_export_end)
+				{
+					// The pointer is not located in the exports section and therefore has no more forwarders
+					break resolved_address;
+				}
+
+				// We have a pointer to a null-terminated string of the form "MYDLL.expfunc" or "MYDLL.#27"
+				let string = unsafe { CStr::from_ptr(resolved_address as _) };
+				let string = string.to_bytes_with_nul();
+
+				// Copy string to buffer
+				for i in 0..string.len() {
+					unsafe {
+						let c = *string.get_unchecked(i);
+						*buffer.get_unchecked_mut(i) = c;
+					}
+				}
+
+				// Give an extra 4 bytes for adding "dll\0"
+				let working_buffer = unsafe { buffer.get_unchecked_mut(..string.len() + 4) };
+
+				// Find the dot
+				let dot_index = working_buffer
+					.iter()
+					.position(|&b| b == b'.')
+					.ok_or(Error::SplitString)?;
+
+				// Move things after the dot forwards
+				for i in (dot_index + 1..working_buffer.len()).rev() {
+					unsafe {
+						let c = *working_buffer.get_unchecked(i);
+						*working_buffer.get_unchecked_mut(i + 4) = c;
+					};
+				}
+
+				// Write DLL
+				unsafe {
+					*working_buffer.get_unchecked_mut(dot_index + 1) = b'd';
+					*working_buffer.get_unchecked_mut(dot_index + 2) = b'l';
+					*working_buffer.get_unchecked_mut(dot_index + 3) = b'l';
+					*working_buffer.get_unchecked_mut(dot_index + 4) = b'\0';
+				}
+
+				let (dll_name, rest) =
+					unsafe { working_buffer.split_at_mut_unchecked(dot_index + 5) };
+
+				// Load library if it is not already loaded and get the base
+				let loaded_library_base =
+					get_library_base(peb_ldr, dll_name.as_ptr(), loadlibrarya)?;
+
+				// Find the exports of the loaded library
+				let loaded_library = PeHeaders::parse(loaded_library_base)?;
+				let loaded_library_exports =
+					loaded_library.export_table_mem(loaded_library_base)?;
+
+				// Set resolved address for next loop
+				resolved_address = if unsafe { *rest.get_unchecked(0) } == b'#' {
+					// Load from ordinal
+					let number_string = unsafe { from_utf8_unchecked(rest.get_unchecked(1..)) };
+					let ordinal =
+						u16::from_str_radix(number_string, 10).map_err(|_| Error::ParseNumber)?;
+
+					// Find matching function in loaded library
+					let export_rva = unsafe {
+						*loaded_library_exports
+							.address_table
+							.get_unchecked(ordinal as usize)
+					};
+
+					unsafe { loaded_library_base.add(export_rva as _) }
+				}
+				else {
+					// Load from name
+
+					// Get the name of the function
+					let string = unsafe { CStr::from_ptr(rest.as_ptr() as _) };
+
+					// Find matching function in loaded library
+					find_export_by_ascii(&loaded_library_exports, loaded_library_base, string)?
+				};
+
+				// Set the new export range
+				current_export_start = loaded_library_exports.start_address;
+				current_export_end =
+					unsafe { current_export_start.add(loaded_library_exports.size as _) };
+			};
+
 			// Write function VA into IAT
-			unsafe { *iat_ptr = function_va as usize };
+			unsafe { *iat_ptr = function_va as _ };
 
 			// Advance to the next entry
 			ilt_ptr = unsafe { ilt_ptr.add(1) };
@@ -329,12 +447,12 @@ fn load() -> (*mut u8, *mut u8) {
 
 	// Process relocations
 	let image_base_in_file = pe.nt_header.optional_header().image_base();
-	let calculated_offset = allocated_ptr as usize - image_base_in_file as usize;
+	let calculated_offset = allocated_ptr as isize - image_base_in_file as isize;
 
-	let relocations = pe
-		.data_directories
-		.get(IMAGE_DIRECTORY_ENTRY_BASERELOC)
-		.unwrap();
+	let relocations = unsafe {
+		pe.data_directories
+			.get_unchecked(IMAGE_DIRECTORY_ENTRY_BASERELOC)
+	};
 
 	// Iterate through the relocation table
 	let reloc_start_address =
@@ -352,9 +470,10 @@ fn load() -> (*mut u8, *mut u8) {
 		let block_va = unsafe { allocated_ptr.add(rva) };
 
 		// Loop over the relocations in this block
-		let (mut relocs_slice, rest) = rest.split_at(relocs_bytes);
+		let (mut relocs_slice, rest) = unsafe { rest.split_at_unchecked(relocs_bytes) };
 		while let &[a, b, ref rest @ ..] = relocs_slice {
 			let reloc = u16::from_le_bytes([a, b]);
+
 			let reloc_type = (reloc & 0xf000) >> 0xc;
 			let reloc_offset = reloc & 0x0fff;
 
@@ -371,7 +490,7 @@ fn load() -> (*mut u8, *mut u8) {
 					let ptr = reloc_va as *mut u32;
 					unsafe { *ptr = *ptr + calculated_offset as u32 };
 				}
-				_ => panic!("Unsupported relocation type"),
+				_ => return Err(Error::RelocationType),
 			}
 
 			relocs_slice = rest;
@@ -435,16 +554,31 @@ fn load() -> (*mut u8, *mut u8) {
 	// We must flush the instruction cache to avoid stale code being used which was updated by our relocation processing
 	unsafe { ntflushinstructioncache(-1 as _, null_mut(), 0) };
 
-	(allocated_ptr, entry_point)
+	Ok((allocated_ptr, entry_point))
+}
+
+#[inline(never)]
+fn handle_error(error: Error) {
+	#[cfg(feature = "debug")]
+	{
+		let error_code = error as u16;
+
+		// Write error code to invalid address for rudimentary debugging
+		unsafe { *(0xdeadbeefdeadbeef as *mut _) = error_code };
+	}
 }
 
 #[no_mangle]
 pub extern "system" fn reflective_loader(reserved: usize) {
-	let (allocated_ptr, entry_point) = load();
+	match load() {
+		Ok((allocated_ptr, entry_point)) => {
+			// Call entry point
+			let entry_point_callable = unsafe {
+				transmute::<_, unsafe extern "system" fn(usize, u32, usize)>(entry_point)
+			};
 
-	// Call entry point
-	let entry_point_callable =
-		unsafe { transmute::<_, unsafe extern "system" fn(usize, u32, usize)>(entry_point) };
-
-	unsafe { entry_point_callable(allocated_ptr as _, DLL_PROCESS_ATTACH, reserved) };
+			unsafe { entry_point_callable(allocated_ptr as _, DLL_PROCESS_ATTACH, reserved) };
+		}
+		Err(e) => handle_error(e),
+	}
 }

@@ -4,6 +4,10 @@ version = "0.2.0"
 authors = ["Ben-Lichtman"]
 edition = "2021"
 
+[features]
+default = ["debug"]
+debug = []
+
 [dependencies]
 cstr_core = "0.2.5"
 ntapi = "0.3.7"

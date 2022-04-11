@@ -1,3 +1,4 @@
+use crate::error::{Error, Result};
 use core::{mem::size_of, slice};
 use cstr_core::CStr;
 use object::{
@@ -18,24 +19,25 @@ pub struct PeHeaders {
 }
 
 impl PeHeaders {
-	pub fn parse(address: *mut u8) -> Option<Self> {
+	#[inline(never)]
+	pub fn parse(address: *mut u8) -> Result<Self> {
 		let dos_header_ptr = address;
 		let dos_header = unsafe { &mut *dos_header_ptr.cast::<ImageDosHeader>() };
 		if dos_header.e_magic.get(LittleEndian) != IMAGE_DOS_SIGNATURE {
-			return None;
+			return Err(Error::PeHeaders);
 		}
 		let nt_header_offset = dos_header.nt_headers_offset() as usize;
 		// Sanity check
 		if nt_header_offset > 1024 {
-			return None;
+			return Err(Error::PeHeaders);
 		}
 		let nt_header_ptr = unsafe { address.add(nt_header_offset) };
 		let nt_header = unsafe { &mut *nt_header_ptr.cast::<ImageNtHeaders64>() };
 		if nt_header.signature.get(LittleEndian) != IMAGE_NT_SIGNATURE {
-			return None;
+			return Err(Error::PeHeaders);
 		}
 		if !nt_header.is_valid_optional_magic() {
-			return None;
+			return Err(Error::PeHeaders);
 		}
 		let data_directories_ptr = unsafe { nt_header_ptr.add(size_of::<ImageNtHeaders64>()) };
 		let num_data_directories = nt_header.optional_header().number_of_rva_and_sizes() as _;
@@ -56,7 +58,7 @@ impl PeHeaders {
 			)
 		};
 
-		Some(Self {
+		Ok(Self {
 			dos_header,
 			nt_header,
 			data_directories,
@@ -64,19 +66,32 @@ impl PeHeaders {
 		})
 	}
 
-	pub fn export_table_mem(&self, image_base: *mut u8) -> Option<ExportTable> {
-		let export_table_data_dir = self.data_directories.get(IMAGE_DIRECTORY_ENTRY_EXPORT)?;
+	#[inline(never)]
+	pub fn export_table_mem(&self, image_base: *mut u8) -> Result<ExportTable> {
+		let export_table_data_dir = self
+			.data_directories
+			.get(IMAGE_DIRECTORY_ENTRY_EXPORT)
+			.ok_or(Error::ExportTable)?;
 		let export_table_rva = export_table_data_dir.virtual_address.get(LittleEndian);
 		let export_table_ptr = unsafe { image_base.add(export_table_rva as _) };
-		Some(ExportTable::parse(export_table_ptr, export_table_rva as _))
+		let export_table_size = export_table_data_dir.size.get(LittleEndian);
+		Ok(ExportTable::parse(
+			export_table_ptr,
+			export_table_rva as _,
+			export_table_size,
+		))
 	}
 
-	pub fn import_table_mem(&self, image_base: *mut u8) -> Option<ImportTable> {
-		let import_table_data_dir = self.data_directories.get(IMAGE_DIRECTORY_ENTRY_IMPORT)?;
+	#[inline(never)]
+	pub fn import_table_mem(&self, image_base: *mut u8) -> Result<ImportTable> {
+		let import_table_data_dir = self
+			.data_directories
+			.get(IMAGE_DIRECTORY_ENTRY_IMPORT)
+			.ok_or(Error::ImportTable)?;
 		let import_table_rva = import_table_data_dir.virtual_address.get(LittleEndian);
 		let import_table_size = import_table_data_dir.size.get(LittleEndian);
 		let import_table_ptr = unsafe { image_base.add(import_table_rva as _) };
-		Some(ImportTable::parse(import_table_ptr, import_table_size as _))
+		Ok(ImportTable::parse(import_table_ptr, import_table_size as _))
 	}
 }
 
@@ -85,10 +100,13 @@ pub struct ExportTable {
 	pub address_table: &'static mut [u32],
 	pub name_table: &'static mut [u32],
 	pub ordinal_table: &'static mut [u16],
+	pub start_address: *mut u8,
+	pub size: u32,
 }
 
 impl ExportTable {
-	pub fn parse(address: *mut u8, rva: usize) -> Self {
+	#[inline(never)]
+	pub fn parse(address: *mut u8, rva: usize, size: u32) -> Self {
 		let export_directory_ptr = address;
 		let export_directory = unsafe { &mut *export_directory_ptr.cast::<ImageExportDirectory>() };
 
@@ -126,9 +144,12 @@ impl ExportTable {
 			address_table,
 			name_table,
 			ordinal_table,
+			start_address: address,
+			size,
 		}
 	}
 
+	#[inline(never)]
 	pub fn iter_name_ord(&self) -> impl Iterator<Item = (u32, u16)> + '_ {
 		self.name_table
 			.iter()
@@ -136,6 +157,7 @@ impl ExportTable {
 			.zip(self.ordinal_table.iter().copied())
 	}
 
+	#[inline(never)]
 	pub fn iter_string_addr(&self, image_base: *mut u8) -> impl Iterator<Item = (&CStr, *mut u8)> {
 		self.iter_name_ord().map(move |(name_rva, ord)| {
 			let string_ptr = unsafe { image_base.add(name_rva as _) };
@@ -152,6 +174,7 @@ pub struct ImportTable {
 }
 
 impl ImportTable {
+	#[inline(never)]
 	pub fn parse(address: *mut u8, size: usize) -> Self {
 		let number_of_entries = size / size_of::<ImageImportDescriptor>() - 1;
 		let import_descriptor_ptr = address.cast::<ImageImportDescriptor>();

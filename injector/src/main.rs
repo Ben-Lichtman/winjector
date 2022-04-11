@@ -16,8 +16,7 @@ use winjector::{
 	windows_wrapper::{snapshot::ThreadEntryIter, thread::Thread},
 };
 
-fn reflective() {
-	let target_name = "Calculator.exe";
+fn reflective(target_name: &str) {
 	let dll_path = r"C:\Users\Ben\dev\rust\winjector\target\release\example.dll";
 	let loader = "reflective_loader";
 
@@ -140,8 +139,7 @@ fn reflective() {
 	// panic!("DONE")
 }
 
-fn conventional() {
-	let target_name = "Calculator.exe";
+fn conventional(target_name: &str) {
 	let dll_path = r"target\release\example.dll";
 	let module = "KERNEL32.DLL";
 	let function = "LoadLibraryA";
@@ -182,6 +180,7 @@ fn conventional() {
 }
 
 fn main() {
+	let target_name = "notepad.exe";
 	// conventional();
-	reflective();
+	reflective(target_name);
 }
