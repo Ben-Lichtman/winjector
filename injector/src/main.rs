@@ -76,67 +76,67 @@ fn reflective(target_name: &str) {
 	let entry_point = allocated.address() + loader_addr_offset;
 	println!("=> Entry point {:x}", entry_point);
 
-	// Create remote thread starting at the loader function
-	let thread = Thread::spawn_remote(
-		&target,
-		0,
-		entry_point,
-		0 as _,
-		THREAD_CREATE_RUN_IMMEDIATELY,
-	)
-	.unwrap();
-	println!("=> Spawned thread at address {:x}", entry_point);
-
-	// // Create snapshot of process
-	// let snap = target.snapshot(TH32CS_SNAPTHREAD).unwrap();
-	// // Use snapshot to get the main thread id of the process
-	// let mut best_tid = 0x0;
-	// let mut best_time = 0xffffffffffffffff;
-	// for thread_entry in snap.thread_entries() {
-	// 	if thread_entry.th32OwnerProcessID != target_pid {
-	// 		continue;
-	// 	}
-	// 	let thread =
-	// 		Thread::from_tid(THREAD_QUERY_INFORMATION, true, thread_entry.th32ThreadID).unwrap();
-	// 	let thread_times = thread.thread_times().unwrap();
-	// 	let time_int =
-	// 		thread_times[0].dwLowDateTime as u64 | ((thread_times[0].dwHighDateTime as u64) << 32);
-	// 	if time_int < best_time {
-	// 		best_time = time_int;
-	// 		best_tid = thread_entry.th32ThreadID;
-	// 	}
-	// }
-	// assert!(best_tid != 0);
-
-	// println!("=> Found main thread with id {}", best_tid);
-
-	// let main_thread = Thread::from_tid(
-	// 	THREAD_SUSPEND_RESUME | THREAD_SET_CONTEXT | THREAD_GET_CONTEXT,
-	// 	true,
-	// 	best_tid,
+	// // Create remote thread starting at the loader function
+	// let thread = Thread::spawn_remote(
+	// 	&target,
+	// 	0,
+	// 	entry_point,
+	// 	0 as _,
+	// 	THREAD_CREATE_RUN_IMMEDIATELY,
 	// )
 	// .unwrap();
+	// println!("=> Spawned thread at address {:x}", entry_point);
 
-	// // Now suspend the main thread
-	// main_thread.suspend().unwrap();
+	// Create snapshot of process
+	let snap = target.snapshot(TH32CS_SNAPTHREAD).unwrap();
+	// Use snapshot to get the main thread id of the process
+	let mut best_tid = 0x0;
+	let mut best_time = 0xffffffffffffffff;
+	for thread_entry in snap.thread_entries() {
+		if thread_entry.th32OwnerProcessID != target_pid {
+			continue;
+		}
+		let thread =
+			Thread::from_tid(THREAD_QUERY_INFORMATION, true, thread_entry.th32ThreadID).unwrap();
+		let thread_times = thread.thread_times().unwrap();
+		let time_int =
+			thread_times[0].dwLowDateTime as u64 | ((thread_times[0].dwHighDateTime as u64) << 32);
+		if time_int < best_time {
+			best_time = time_int;
+			best_tid = thread_entry.th32ThreadID;
+		}
+	}
+	assert!(best_tid != 0);
 
-	// // monkey with thread context
-	// let mut context = main_thread.context(0x100000 | 0x00000001).unwrap();
-	// let old_rip = context.Rip;
-	// println!("=> Old RIP {:x}", old_rip);
+	println!("=> Found main thread with id {}", best_tid);
 
-	// context.ContextFlags |= 0x00100000 | 0x00000001;
-	// context.Rip = entry_point as _;
+	let main_thread = Thread::from_tid(
+		THREAD_SUSPEND_RESUME | THREAD_SET_CONTEXT | THREAD_GET_CONTEXT,
+		true,
+		best_tid,
+	)
+	.unwrap();
 
-	// main_thread.set_context(&mut context).unwrap();
+	// Now suspend the main thread
+	main_thread.suspend().unwrap();
 
-	// target
-	// 	.flush_instruction_cache(allocated.address(), allocated.size())
-	// 	.unwrap();
+	// monkey with thread context
+	let mut context = main_thread.context(0x100000 | 0x00000001).unwrap();
+	let old_rip = context.Rip;
+	println!("=> Old RIP {:x}", old_rip);
 
-	// main_thread.resume().unwrap();
+	context.ContextFlags |= 0x00100000 | 0x00000001;
+	context.Rip = entry_point as _;
 
-	// panic!("DONE")
+	main_thread.set_context(&mut context).unwrap();
+
+	target
+		.flush_instruction_cache(allocated.address(), allocated.size())
+		.unwrap();
+
+	main_thread.resume().unwrap();
+
+	panic!("DONE")
 }
 
 fn conventional(target_name: &str) {

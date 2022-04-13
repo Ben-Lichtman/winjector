@@ -1,5 +1,7 @@
 #![no_std]
 #![feature(slice_split_at_unchecked)]
+#![feature(maybe_uninit_slice)]
+#![feature(maybe_uninit_array_assume_init)]
 
 mod error;
 mod helpers;
@@ -7,8 +9,11 @@ mod structures;
 
 use crate::{
 	error::{Error, Result},
-	helpers::{fnv1a_hash_32, fnv1a_hash_32_wstr, simple_memcpy},
-	structures::{ExportTable, PeHeaders},
+	helpers::{
+		find_export_by_ascii, find_export_by_hash, find_loaded_module_by_ascii,
+		find_loaded_module_by_hash, find_pe, fnv1a_hash_32, fnv1a_hash_32_wstr, simple_memcpy,
+	},
+	structures::PeHeaders,
 };
 use core::{
 	arch::asm,
@@ -19,9 +24,8 @@ use core::{
 	str::from_utf8_unchecked,
 };
 use cstr_core::CStr;
-use helpers::{ascii_ascii_eq, ascii_wstr_eq};
+use helpers::syscall_table;
 use ntapi::{
-	ntldr::LDR_DATA_TABLE_ENTRY,
 	ntpebteb::TEB,
 	ntpsapi::PEB_LDR_DATA,
 	winapi::{
@@ -61,87 +65,6 @@ const VIRTUALALLOC_HASH: u32 = fnv1a_hash_32("VirtualAlloc".as_bytes());
 const LOADLIBRARYA_HASH: u32 = fnv1a_hash_32("LoadLibraryA".as_bytes());
 const NTFLUSHINSTRUCTIONCACHE_HASH: u32 = fnv1a_hash_32("NtFlushInstructionCache".as_bytes());
 const VIRTUALPROTECT: u32 = fnv1a_hash_32("VirtualProtect".as_bytes());
-
-#[inline(never)]
-fn find_pe(start: usize) -> Result<(*mut u8, PeHeaders)> {
-	let mut page_aligned = start & !0xfff;
-	loop {
-		if page_aligned == 0 {
-			return Err(Error::SelfFind);
-		}
-
-		match PeHeaders::parse(page_aligned as _) {
-			Ok(pe) => break Ok((page_aligned as _, pe)),
-			Err(_) => page_aligned -= 0x1000,
-		}
-	}
-}
-
-#[inline(never)]
-fn find_loaded_module_by_hash(ldr: &PEB_LDR_DATA, hash: u32) -> Result<*mut u8> {
-	// Get initial entry in the list
-	let mut ldr_data_ptr = ldr.InLoadOrderModuleList.Flink as *mut LDR_DATA_TABLE_ENTRY;
-	while !ldr_data_ptr.is_null() {
-		let ldr_data = unsafe { &*ldr_data_ptr };
-
-		// Make a slice of wchars from the base name
-		let dll_name = ldr_data.BaseDllName;
-		let dll_name_wstr =
-			unsafe { slice::from_raw_parts(dll_name.Buffer, dll_name.Length as usize / 2) };
-
-		if fnv1a_hash_32_wstr(dll_name_wstr) != hash {
-			// Go to the next entry
-			ldr_data_ptr = ldr_data.InLoadOrderLinks.Flink as *mut LDR_DATA_TABLE_ENTRY;
-			continue;
-		}
-
-		// Return the base address for this DLL
-		return Ok(ldr_data.DllBase as _);
-	}
-	Err(Error::ModuleByHash)
-}
-
-#[inline(never)]
-fn find_loaded_module_by_ascii(ldr: &PEB_LDR_DATA, ascii: *const i8) -> Result<*mut u8> {
-	let ascii = unsafe { CStr::from_ptr(ascii) };
-
-	// Get initial entry in the list
-	let mut ldr_data_ptr = ldr.InLoadOrderModuleList.Flink as *mut LDR_DATA_TABLE_ENTRY;
-	while !ldr_data_ptr.is_null() {
-		let ldr_data = unsafe { &*ldr_data_ptr };
-
-		// Make a slice of wchars from the base name
-		let dll_name = ldr_data.BaseDllName;
-		let dll_name_wstr =
-			unsafe { slice::from_raw_parts(dll_name.Buffer, dll_name.Length as usize / 2) };
-
-		if ascii_wstr_eq(ascii, dll_name_wstr) {
-			return Ok(ldr_data.DllBase as _);
-		}
-
-		// Go to the next entry
-		ldr_data_ptr = ldr_data.InLoadOrderLinks.Flink as *mut LDR_DATA_TABLE_ENTRY;
-	}
-	Err(Error::ModuleByAscii)
-}
-
-#[inline(never)]
-fn find_export_by_hash(table: &ExportTable, base: *mut u8, hash: u32) -> Result<*mut u8> {
-	table
-		.iter_string_addr(base)
-		.find(|(name, _)| fnv1a_hash_32(name.to_bytes()) == hash)
-		.map(|(_, a)| a)
-		.ok_or(Error::ExportVaByHash)
-}
-
-#[inline(never)]
-fn find_export_by_ascii(table: &ExportTable, base: *mut u8, string: &CStr) -> Result<*mut u8> {
-	table
-		.iter_string_addr(base)
-		.find(|(name, _)| ascii_ascii_eq(name.to_bytes(), string.to_bytes()))
-		.map(|(_, a)| a)
-		.ok_or(Error::ExportVaByAscii)
-}
 
 #[inline(never)]
 pub fn get_library_base(
@@ -187,11 +110,33 @@ fn load() -> Result<(*mut u8, *mut u8)> {
 	let peb_ldr = unsafe { &*peb.Ldr };
 
 	// Traverse loaded modules to find kernel32.dll and ntdll.dll
-	let kernel32_base = find_loaded_module_by_hash(peb_ldr, KERNEL32_HASH)?;
-	let kernel32 = PeHeaders::parse(kernel32_base)?;
-
 	let ntdll_base = find_loaded_module_by_hash(peb_ldr, NTDLL_HASH)?;
 	let ntdll = PeHeaders::parse(ntdll_base)?;
+
+	// Locate the export table for ntdll.dll
+	let ntdll_export_table = ntdll.export_table_mem(ntdll_base)?;
+
+	// let syscall_table = syscall_table(&ntdll_export_table, ntdll_base);
+
+	// Find the required function locations in ntdll.dll
+	let ntflushinstructioncache = find_export_by_hash(
+		&ntdll_export_table,
+		ntdll_base,
+		NTFLUSHINSTRUCTIONCACHE_HASH,
+	)?;
+	let ntflushinstructioncache = unsafe {
+		transmute::<
+			_,
+			unsafe extern "system" fn(
+				ProcessHandle: HANDLE,
+				BaseAddress: PVOID,
+				Length: SIZE_T,
+			) -> NTSTATUS,
+		>(ntflushinstructioncache)
+	};
+
+	let kernel32_base = find_loaded_module_by_hash(peb_ldr, KERNEL32_HASH)?;
+	let kernel32 = PeHeaders::parse(kernel32_base)?;
 
 	// Locate the export table for kernel32.dll
 	let kernel32_export_table = kernel32.export_table_mem(kernel32_base)?;
@@ -229,26 +174,6 @@ fn load() -> Result<(*mut u8, *mut u8)> {
 				lpfloldprotect: *mut PAGE_PROTECTION_FLAGS,
 			) -> BOOL,
 		>(virtualprotect)
-	};
-
-	// Locate the export table for ntdll.dll
-	let ntdll_export_table = ntdll.export_table_mem(ntdll_base)?;
-
-	// Find the required function locations in ntdll.dll
-	let ntflushinstructioncache = find_export_by_hash(
-		&ntdll_export_table,
-		ntdll_base,
-		NTFLUSHINSTRUCTIONCACHE_HASH,
-	)?;
-	let ntflushinstructioncache = unsafe {
-		transmute::<
-			_,
-			unsafe extern "system" fn(
-				ProcessHandle: HANDLE,
-				BaseAddress: PVOID,
-				Length: SIZE_T,
-			) -> NTSTATUS,
-		>(ntflushinstructioncache)
 	};
 
 	// Allocate space to map the PE into
