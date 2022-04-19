@@ -1,7 +1,7 @@
 use loader as _;
 use std::{
 	env,
-	ffi::{c_void, CStr},
+	ffi::c_void,
 	fs::{self, File},
 	io::Write,
 };
@@ -9,8 +9,6 @@ use windows::{
 	core::PCSTR,
 	Win32::{
 		Foundation::HWND,
-		Storage::FileSystem::GetTempPathA,
-		System::Diagnostics::Debug::OutputDebugStringA,
 		UI::WindowsAndMessaging::{MessageBoxA, MB_OK},
 	},
 };
@@ -40,10 +38,8 @@ fn attach() {
 			MB_OK,
 		)
 	};
-	// write_file()
 
 	// write_file(&env::var("TMP").unwrap());
-
 	// write_file("C:\\pwned");
 }
 

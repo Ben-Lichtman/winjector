@@ -11,6 +11,7 @@ use cstr_core::CStr;
 use ntapi::{ntldr::LDR_DATA_TABLE_ENTRY, ntpsapi::PEB_LDR_DATA};
 
 const SYSCALL_TABLE_SIZE: usize = 512;
+// const LIBRARY_CONVERSION_BUFFER_SIZE: usize = 128;
 
 // Abusing fnv1a hash to find the string we're looking for
 // Can't just do a string comparison because the segments aren't properly loaded yet
@@ -192,6 +193,29 @@ pub fn find_export_by_ascii(
 }
 
 #[inline(never)]
+pub fn get_library_base(
+	peb_ldr: &PEB_LDR_DATA,
+	library_name: *const u8,
+	loadlibrarya: unsafe extern "system" fn(*const u8) -> isize,
+) -> Result<*mut u8> {
+	let loaded_library_base = match find_loaded_module_by_ascii(peb_ldr, library_name as _) {
+		Ok(base) => base,
+		Err(_) => {
+			// Call loadlibrarya and then try find it again
+			let module_handle = unsafe { loadlibrarya(library_name) as *mut u8 };
+			if module_handle.is_null() {
+				return Err(Error::LoadLibrary);
+			}
+			find_loaded_module_by_ascii(peb_ldr, library_name as _)?
+		}
+	};
+	if loaded_library_base.is_null() {
+		return Err(Error::LoadLibrary);
+	}
+	Ok(loaded_library_base)
+}
+
+#[inline(never)]
 pub fn syscall_table(exports: &ExportTable, base: *mut u8) -> [u32; SYSCALL_TABLE_SIZE] {
 	let mut scratch_table = [MaybeUninit::<(u32, *mut u8)>::uninit(); SYSCALL_TABLE_SIZE];
 	let mut num_syscalls = 0;
@@ -210,10 +234,10 @@ pub fn syscall_table(exports: &ExportTable, base: *mut u8) -> [u32; SYSCALL_TABL
 				Some(&x) => x,
 				None => return false,
 			};
-			if name_0 != b'z' && name_0 != b'Z' {
+			if name_0 != b'Z' {
 				return false;
 			}
-			if name_1 != b'w' && name_1 != b'W' {
+			if name_1 != b'w' {
 				return false;
 			}
 			true
@@ -242,6 +266,10 @@ pub fn syscall_table(exports: &ExportTable, base: *mut u8) -> [u32; SYSCALL_TABL
 	output
 }
 
-pub fn find_syscall_by_hash(table: &[u32; SYSCALL_TABLE_SIZE], hash: u32) -> Option<usize> {
-	table.iter().position(|&table_hash| table_hash == hash)
+pub fn find_syscall_by_hash(table: &[u32; SYSCALL_TABLE_SIZE], hash: u32) -> Result<u32> {
+	table
+		.iter()
+		.position(|&table_hash| table_hash == hash)
+		.map(|x| x as u32)
+		.ok_or(Error::SyscallNumber)
 }

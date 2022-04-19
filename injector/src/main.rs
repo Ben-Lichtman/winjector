@@ -17,7 +17,7 @@ use winjector::{
 };
 
 fn reflective(target_name: &str) {
-	let dll_path = r"C:\Users\Ben\dev\rust\winjector\target\release\example.dll";
+	let dll_path = r"target\release\example.dll";
 	let loader = "reflective_loader";
 
 	// read DLL
