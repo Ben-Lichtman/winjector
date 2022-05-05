@@ -37,6 +37,7 @@ pub unsafe fn syscall5(number: u32, arg1: u64, arg2: u64, arg3: u64, arg4: u64, 
 	output
 }
 
+#[inline(never)]
 pub unsafe fn syscall6(
 	number: u32,
 	arg1: u64,

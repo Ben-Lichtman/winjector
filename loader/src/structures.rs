@@ -4,7 +4,7 @@ use cstr_core::CStr;
 use object::{
 	pe::{
 		ImageDataDirectory, ImageDosHeader, ImageExportDirectory, ImageImportDescriptor,
-		ImageNtHeaders64, ImageSectionHeader, IMAGE_DIRECTORY_ENTRY_EXPORT,
+		ImageNtHeaders32, ImageNtHeaders64, ImageSectionHeader, IMAGE_DIRECTORY_ENTRY_EXPORT,
 		IMAGE_DIRECTORY_ENTRY_IMPORT, IMAGE_DOS_SIGNATURE, IMAGE_NT_SIGNATURE,
 	},
 	read::pe::{ImageNtHeaders, ImageOptionalHeader},
@@ -13,7 +13,10 @@ use object::{
 
 pub struct PeHeaders {
 	pub dos_header: &'static mut ImageDosHeader,
+	#[cfg(target_arch = "x86_64")]
 	pub nt_header: &'static mut ImageNtHeaders64,
+	#[cfg(target_arch = "x86")]
+	pub nt_header: &'static mut ImageNtHeaders32,
 	pub data_directories: &'static mut [ImageDataDirectory],
 	pub section_headers: &'static mut [ImageSectionHeader],
 }
@@ -32,14 +35,20 @@ impl PeHeaders {
 			return Err(Error::PeHeaders);
 		}
 		let nt_header_ptr = unsafe { address.add(nt_header_offset) };
+		#[cfg(target_arch = "x86_64")]
 		let nt_header = unsafe { &mut *nt_header_ptr.cast::<ImageNtHeaders64>() };
+		#[cfg(target_arch = "x86")]
+		let nt_header = unsafe { &mut *nt_header_ptr.cast::<ImageNtHeaders32>() };
 		if nt_header.signature.get(LittleEndian) != IMAGE_NT_SIGNATURE {
 			return Err(Error::PeHeaders);
 		}
 		if !nt_header.is_valid_optional_magic() {
 			return Err(Error::PeHeaders);
 		}
+		#[cfg(target_arch = "x86_64")]
 		let data_directories_ptr = unsafe { nt_header_ptr.add(size_of::<ImageNtHeaders64>()) };
+		#[cfg(target_arch = "x86")]
+		let data_directories_ptr = unsafe { nt_header_ptr.add(size_of::<ImageNtHeaders32>()) };
 		let num_data_directories = nt_header.optional_header().number_of_rva_and_sizes() as _;
 		let data_directories = unsafe {
 			slice::from_raw_parts_mut(

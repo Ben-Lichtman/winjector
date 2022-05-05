@@ -4,17 +4,17 @@ use crate::{
 };
 use core::{
 	mem::MaybeUninit,
+	ptr::null_mut,
 	slice,
 	sync::atomic::{compiler_fence, Ordering},
 };
 use cstr_core::CStr;
 use ntapi::{ntldr::LDR_DATA_TABLE_ENTRY, ntpsapi::PEB_LDR_DATA};
+use windows_sys::Win32::Foundation::UNICODE_STRING;
 
 const SYSCALL_TABLE_SIZE: usize = 512;
-// const LIBRARY_CONVERSION_BUFFER_SIZE: usize = 128;
+const LIBRARY_CONVERSION_BUFFER_SIZE: usize = 64;
 
-// Abusing fnv1a hash to find the string we're looking for
-// Can't just do a string comparison because the segments aren't properly loaded yet
 #[inline(never)]
 pub const fn fnv1a_hash_32_wstr(wchars: &[u16]) -> u32 {
 	const FNV_OFFSET_BASIS_32: u32 = 0x811c9dc5;
@@ -24,15 +24,14 @@ pub const fn fnv1a_hash_32_wstr(wchars: &[u16]) -> u32 {
 
 	let mut i = 0;
 	while i < wchars.len() {
-		hash ^= wchars[i] as u32;
+		let c = unsafe { char::from_u32_unchecked(wchars[i] as u32).to_ascii_lowercase() };
+		hash ^= c as u32;
 		hash = hash.wrapping_mul(FNV_PRIME_32);
 		i += 1;
 	}
 	hash
 }
 
-// Abusing fnv1a hash to find the string we're looking for
-// Can't just do a string comparison because the segments aren't properly loaded yet
 #[inline(never)]
 pub const fn fnv1a_hash_32(chars: &[u8]) -> u32 {
 	const FNV_OFFSET_BASIS_32: u32 = 0x811c9dc5;
@@ -42,7 +41,8 @@ pub const fn fnv1a_hash_32(chars: &[u8]) -> u32 {
 
 	let mut i = 0;
 	while i < chars.len() {
-		hash ^= chars[i] as u32;
+		let c = unsafe { char::from_u32_unchecked(chars[i] as u32).to_ascii_lowercase() };
+		hash ^= c as u32;
 		hash = hash.wrapping_mul(FNV_PRIME_32);
 		i += 1;
 	}
@@ -59,6 +59,15 @@ pub fn simple_memcpy(dest: *mut u8, src: *mut u8, len: usize) {
 }
 
 #[inline(never)]
+pub fn simple_memset_u32(dest: &mut [MaybeUninit<u32>], value: u32) {
+	let n_bytes = dest.len(); // Iterate backwards to avoid optimizing..?
+	for i in (0..n_bytes).rev() {
+		compiler_fence(Ordering::Acquire);
+		unsafe { dest.get_unchecked_mut(i).write(value) };
+	}
+}
+
+#[inline(never)]
 pub fn ascii_wstr_eq(ascii: &CStr, wstr: &[u16]) -> bool {
 	// Check if the lengths are equal
 	if wstr.len() != ascii.to_bytes().len() {
@@ -70,12 +79,7 @@ pub fn ascii_wstr_eq(ascii: &CStr, wstr: &[u16]) -> bool {
 		.iter()
 		.copied()
 		.zip(ascii.to_bytes().iter().copied())
-		.map(|(a, b)| unsafe {
-			(
-				char::from_u32_unchecked(a as u32).to_ascii_lowercase(),
-				char::from_u32_unchecked(b as u32).to_ascii_lowercase(),
-			)
-		})
+		.map(|(a, b)| ((a as u8).to_ascii_lowercase(), b.to_ascii_lowercase()))
 		.any(|(a, b)| a != b)
 	{
 		return false;
@@ -94,12 +98,7 @@ pub fn ascii_ascii_eq(a: &[u8], b: &[u8]) -> bool {
 	if a.iter()
 		.copied()
 		.zip(b.iter().copied())
-		.map(|(a, b)| unsafe {
-			(
-				char::from_u32_unchecked(a as u32).to_ascii_lowercase(),
-				char::from_u32_unchecked(b as u32).to_ascii_lowercase(),
-			)
-		})
+		.map(|(a, b)| (a.to_ascii_lowercase(), b.to_ascii_lowercase()))
 		.any(|(a, b)| a != b)
 	{
 		return false;
@@ -131,8 +130,11 @@ pub fn find_loaded_module_by_hash(ldr: &PEB_LDR_DATA, hash: u32) -> Result<*mut 
 
 		// Make a slice of wchars from the base name
 		let dll_name = ldr_data.BaseDllName;
-		let dll_name_wstr =
-			unsafe { slice::from_raw_parts(dll_name.Buffer, dll_name.Length as usize / 2) };
+		let buffer = dll_name.Buffer;
+		if buffer.is_null() {
+			break;
+		}
+		let dll_name_wstr = unsafe { slice::from_raw_parts(buffer, dll_name.Length as usize / 2) };
 
 		if fnv1a_hash_32_wstr(dll_name_wstr) != hash {
 			// Go to the next entry
@@ -157,8 +159,11 @@ pub fn find_loaded_module_by_ascii(ldr: &PEB_LDR_DATA, ascii: *const i8) -> Resu
 
 		// Make a slice of wchars from the base name
 		let dll_name = ldr_data.BaseDllName;
-		let dll_name_wstr =
-			unsafe { slice::from_raw_parts(dll_name.Buffer, dll_name.Length as usize / 2) };
+		let buffer = dll_name.Buffer;
+		if buffer.is_null() {
+			break;
+		}
+		let dll_name_wstr = unsafe { slice::from_raw_parts(buffer, dll_name.Length as usize / 2) };
 
 		if ascii_wstr_eq(ascii, dll_name_wstr) {
 			return Ok(ldr_data.DllBase as _);
@@ -196,17 +201,46 @@ pub fn find_export_by_ascii(
 pub fn get_library_base(
 	peb_ldr: &PEB_LDR_DATA,
 	library_name: *const u8,
-	loadlibrarya: unsafe extern "system" fn(*const u8) -> isize,
+	ldrloaddll: unsafe extern "system" fn(
+		DllPath: *const u16,
+		DllCharacteristics: *const u32,
+		DllName: *const UNICODE_STRING,
+		DllHandle: *mut *mut u8,
+	) -> i32,
 ) -> Result<*mut u8> {
 	let loaded_library_base = match find_loaded_module_by_ascii(peb_ldr, library_name as _) {
 		Ok(base) => base,
 		Err(_) => {
-			// Call loadlibrarya and then try find it again
-			let module_handle = unsafe { loadlibrarya(library_name) as *mut u8 };
+			let name_ascii = unsafe { CStr::from_ptr(library_name as _) };
+
+			let mut buffer_space = [MaybeUninit::uninit(); LIBRARY_CONVERSION_BUFFER_SIZE];
+			buffer_space
+				.iter_mut()
+				.zip(name_ascii.to_bytes_with_nul().iter())
+				.for_each(|(wchar, &ascii)| {
+					wchar.write(ascii as u16);
+				});
+
+			let unicode_string = UNICODE_STRING {
+				Length: (name_ascii.to_bytes().len() * 2) as _,
+				MaximumLength: (name_ascii.to_bytes_with_nul().len() * 2) as _,
+				Buffer: MaybeUninit::slice_as_ptr(&buffer_space) as _,
+			};
+
+			// Now load the library
+			let mut module_handle = null_mut::<u8>();
+			unsafe {
+				ldrloaddll(
+					null_mut(),
+					null_mut(),
+					&unicode_string as _,
+					&mut module_handle,
+				)
+			};
 			if module_handle.is_null() {
 				return Err(Error::LoadLibrary);
 			}
-			find_loaded_module_by_ascii(peb_ldr, library_name as _)?
+			module_handle
 		}
 	};
 	if loaded_library_base.is_null() {
@@ -257,7 +291,11 @@ pub fn syscall_table(exports: &ExportTable, base: *mut u8) -> [u32; SYSCALL_TABL
 	// Sort the filled entries by address
 	working_slice.sort_unstable_by_key(|(_, addr)| *addr);
 
-	let mut output = [0; SYSCALL_TABLE_SIZE];
+	let mut output = [MaybeUninit::uninit(); SYSCALL_TABLE_SIZE];
+
+	simple_memset_u32(&mut output, 0);
+
+	let mut output = unsafe { MaybeUninit::array_assume_init(output) };
 
 	// Copy hashes over to output slice
 	for i in 0..num_syscalls {
@@ -266,6 +304,7 @@ pub fn syscall_table(exports: &ExportTable, base: *mut u8) -> [u32; SYSCALL_TABL
 	output
 }
 
+#[inline(never)]
 pub fn find_syscall_by_hash(table: &[u32; SYSCALL_TABLE_SIZE], hash: u32) -> Result<u32> {
 	table
 		.iter()
@@ -273,3 +312,53 @@ pub fn find_syscall_by_hash(table: &[u32; SYSCALL_TABLE_SIZE], hash: u32) -> Res
 		.map(|x| x as u32)
 		.ok_or(Error::SyscallNumber)
 }
+
+// #[inline(never)]
+// pub fn load_kernel32(
+// 	ldrloaddll: unsafe extern "system" fn(
+// 		*const u16,
+// 		*const u32,
+// 		*const windows_sys::Win32::Foundation::UNICODE_STRING,
+// 		*mut *mut u8,
+// 	) -> i32,
+// ) -> Result<*mut u8> {
+// 	const A: u64 = u64::from_le_bytes([b'k', 0, b'e', 0, b'r', 0, b'n', 0]);
+// 	const B: u64 = u64::from_le_bytes([b'e', 0, b'l', 0, b'3', 0, b'2', 0]);
+// 	const C: u64 = u64::from_le_bytes([b'.', 0, b'd', 0, b'l', 0, b'l', 0]);
+
+// 	let mut buffer = [0u8; 26];
+// 	let buffer_ptr = buffer.as_mut_ptr();
+// 	unsafe {
+// 		asm!(
+// 			"mov {tmp}, {A}",
+// 			"mov [{buf}], {tmp}",
+// 			"mov {tmp}, {B}",
+// 			"mov [{buf} + 0x8], {tmp}",
+// 			"mov {tmp}, {C}",
+// 			"mov [{buf} + 0x10], {tmp}",
+// 			buf = in (reg) buffer_ptr,
+// 			tmp = out(reg) _,
+// 			A = const A,
+// 			B = const B,
+// 			C = const C);
+// 	};
+
+// 	let mut unicode_string = unsafe { core::mem::zeroed::<UNICODE_STRING>() };
+// 	unicode_string.Length = 24;
+// 	unicode_string.MaximumLength = 26;
+// 	unicode_string.Buffer = &buffer as *const _ as _;
+
+// 	let mut module_handle = null_mut::<u8>();
+// 	unsafe {
+// 		ldrloaddll(
+// 			null_mut(),
+// 			null_mut(),
+// 			&unicode_string as _,
+// 			&mut module_handle as _,
+// 		)
+// 	};
+// 	if module_handle.is_null() {
+// 		return Err(Error::LdrLoadDll);
+// 	}
+// 	Ok(module_handle)
+// }

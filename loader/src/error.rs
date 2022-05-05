@@ -18,4 +18,5 @@ pub enum Error {
 	SplitString,
 	ParseNumber,
 	SyscallNumber,
+	LdrLoadDll,
 }

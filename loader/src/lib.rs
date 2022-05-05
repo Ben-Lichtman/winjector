@@ -2,6 +2,8 @@
 #![feature(slice_split_at_unchecked)]
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_array_assume_init)]
+#![feature(const_char_convert)]
+#![feature(asm_const)]
 
 mod error;
 mod helpers;
@@ -40,33 +42,36 @@ use object::{
 	LittleEndian,
 };
 use wchar::wch;
-use windows_sys::{
-	core::PCSTR,
-	Win32::{
-		Foundation::{HINSTANCE, STATUS_SUCCESS},
-		System::Memory::{
-			MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
-			PAGE_EXECUTE_WRITECOPY, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY,
-		},
+use windows_sys::Win32::{
+	Foundation::{STATUS_SUCCESS, UNICODE_STRING},
+	System::Memory::{
+		MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
+		PAGE_EXECUTE_WRITECOPY, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY,
 	},
 };
 
-const KERNEL32_HASH: u32 = fnv1a_hash_32_wstr(wch!("KERNEL32.DLL"));
-const NTDLL_HASH: u32 = fnv1a_hash_32_wstr(wch!("ntdll.dll"));
+// Abusing fnv1a hash to find the strings we're looking for
+// Can't just do a string comparison because the segments aren't properly loaded yet
 
-// const LDRLOADDLL_HASH: u32 = fnv1a_hash_32("LdrLoadDll".as_bytes());
+const NTDLL_HASH: u32 = fnv1a_hash_32_wstr(wch!("ntdll.dll"));
 
 const ZWFLUSHINSTRUCTIONCACHE_HASH: u32 = fnv1a_hash_32("ZwFlushInstructionCache".as_bytes());
 const ZWALLOCATEVIRTUALMEMORY_HASH: u32 = fnv1a_hash_32("ZwAllocateVirtualMemory".as_bytes());
 const ZWPROTECTVIRTUALMEMORY_HASH: u32 = fnv1a_hash_32("ZwProtectVirtualMemory".as_bytes());
 
-const LOADLIBRARYA_HASH: u32 = fnv1a_hash_32("LoadLibraryA".as_bytes());
+const LDRLOADDLL_HASH: u32 = fnv1a_hash_32("LdrLoadDll".as_bytes());
 
 #[inline(never)]
 fn load() -> Result<(*mut u8, *mut u8)> {
 	let rip: usize;
-	unsafe { asm!("lea {rip}, [rip]", rip = out(reg) rip) };
-
+	#[cfg(target_arch = "x86_64")]
+	unsafe {
+		asm!("lea {rip}, [rip]", rip = out(reg) rip)
+	};
+	#[cfg(target_arch = "x86")]
+	unsafe {
+		asm!("lea {eip}, [eip]", rip = out(reg) rip)
+	};
 	let (pe_base, pe) = find_pe(rip)?;
 
 	// Locate other important data structures
@@ -89,11 +94,9 @@ fn load() -> Result<(*mut u8, *mut u8)> {
 	// Locate the export table for ntdll.dll
 	let ntdll_export_table = ntdll.export_table_mem(ntdll_base)?;
 
-	// Locate some functions
-	// let ldr_load_dll = find_export_by_hash(&ntdll_export_table, ntdll_base, LDRLOADDLL_HASH)?;
-
 	let syscall_table = syscall_table(&ntdll_export_table, ntdll_base);
 
+	// Find some important syscall numbers
 	let sys_no_zwflushinstructioncache =
 		find_syscall_by_hash(&syscall_table, ZWFLUSHINSTRUCTIONCACHE_HASH)?;
 	let sys_no_zwallocatevirtualmemory =
@@ -101,17 +104,17 @@ fn load() -> Result<(*mut u8, *mut u8)> {
 	let sys_no_zwprotectvirtualmemory =
 		find_syscall_by_hash(&syscall_table, ZWPROTECTVIRTUALMEMORY_HASH)?;
 
-	// Traverse loaded modules to find kernel32.dll
-	let kernel32_base = find_loaded_module_by_hash(peb_ldr, KERNEL32_HASH)?;
-	let kernel32 = PeHeaders::parse(kernel32_base)?;
-
-	// Locate the export table for ntdll.dll
-	let kernel32_export_table = kernel32.export_table_mem(kernel32_base)?;
-
-	let loadlibararya =
-		find_export_by_hash(&kernel32_export_table, kernel32_base, LOADLIBRARYA_HASH)?;
-	let loadlibrarya = unsafe {
-		transmute::<_, unsafe extern "system" fn(lplibfilename: PCSTR) -> HINSTANCE>(loadlibararya)
+	let ldrloaddll = find_export_by_hash(&ntdll_export_table, ntdll_base, LDRLOADDLL_HASH)?;
+	let ldrloaddll = unsafe {
+		transmute::<
+			_,
+			unsafe extern "system" fn(
+				DllPath: *const u16,
+				DllCharacteristics: *const u32,
+				DllName: *const UNICODE_STRING,
+				DllHandle: *mut *mut u8,
+			) -> i32,
+		>(ldrloaddll)
 	};
 
 	// Allocate space to map the PE into
@@ -167,7 +170,7 @@ fn load() -> Result<(*mut u8, *mut u8)> {
 		let library_name = unsafe { allocated_ptr.add(name_rva) };
 
 		// Load library if it is not already loaded and get the base
-		let loaded_library_base = get_library_base(peb_ldr, library_name as _, loadlibrarya)?;
+		let loaded_library_base = get_library_base(peb_ldr, library_name as _, ldrloaddll)?;
 
 		// Find the exports of the loaded library
 		let loaded_library = PeHeaders::parse(loaded_library_base)?;
@@ -268,8 +271,7 @@ fn load() -> Result<(*mut u8, *mut u8)> {
 					unsafe { working_buffer.split_at_mut_unchecked(dot_index + 5) };
 
 				// Load library if it is not already loaded and get the base
-				let loaded_library_base =
-					get_library_base(peb_ldr, dll_name.as_ptr(), loadlibrarya)?;
+				let loaded_library_base = get_library_base(peb_ldr, dll_name.as_ptr(), ldrloaddll)?;
 
 				// Find the exports of the loaded library
 				let loaded_library = PeHeaders::parse(loaded_library_base)?;
@@ -460,6 +462,7 @@ fn handle_error(error: Error) {
 }
 
 #[no_mangle]
+#[inline(never)]
 pub extern "system" fn reflective_loader(reserved: usize) {
 	match load() {
 		Ok((allocated_ptr, entry_point)) => {
@@ -471,5 +474,37 @@ pub extern "system" fn reflective_loader(reserved: usize) {
 			unsafe { entry_point_callable(allocated_ptr as _, DLL_PROCESS_ATTACH, reserved) };
 		}
 		Err(e) => handle_error(e),
+	}
+}
+
+#[no_mangle]
+#[inline(never)]
+pub extern "system" fn reflective_loader_wow64(reserved: usize) {
+	unsafe {
+		asm!(
+			".code32",
+			"push ebp",
+			"mov ebp, esp",
+			"and esp, 0xfffffff0",
+			"push 0x33",
+			"call 1f",
+			"1:",
+			"add dword ptr [esp], 5",
+			"retf",
+			".code64",
+		);
+		reflective_loader(reserved);
+		asm!(
+			".code64",
+			"call 1f",
+			"1:",
+			"mov dword ptr [rsp + 4], 0x23",
+			"add dword ptr [rsp], 0xd",
+			"retf",
+			".code32",
+			"mov esp, ebp",
+			"pop ebp",
+			".code64",
+		);
 	}
 }
