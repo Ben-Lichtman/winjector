@@ -1,4 +1,4 @@
-use loader as _;
+use reloader as _;
 use std::{
 	env,
 	ffi::c_void,
@@ -18,6 +18,8 @@ use windows::{
 extern "system" fn DllMain(_dll_module: i64, call_reason: i32, _reserved: *const c_void) -> i32 {
 	const DLL_PROCESS_ATTACH: i32 = 1;
 	const DLL_PROCESS_DETACH: i32 = 0;
+
+	// unsafe { core::arch::asm!("int3") }
 
 	match call_reason {
 		DLL_PROCESS_ATTACH => attach(),

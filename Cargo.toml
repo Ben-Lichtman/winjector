@@ -1,2 +1,2 @@
 [workspace]
-members = ["injector", "loader", "example"]
+members = ["injector", "example"]
