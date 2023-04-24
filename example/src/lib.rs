@@ -1,6 +1,6 @@
 mod payloads;
 
-use crate::payloads::{experiment, message_box, network_payload};
+use crate::payloads::*;
 use reloader as _;
 use std::ffi::c_void;
 
@@ -19,9 +19,9 @@ extern "system" fn DllMain(_dll_module: i64, call_reason: i32, _reserved: *const
 }
 
 fn attach() {
-	network_payload();
+	// network_payload();
 	// write_file(&env::var("TMP").unwrap());
-	// write_file("C:\\pwned");
+	write_file("C:\\pwned");
 	// experiment();
-	// message_box("hello world");
+	message_box("hello world");
 }

@@ -51,7 +51,7 @@ fn process_from_name(target_name: &str) -> winjector::windows_wrapper::process::
 	// }
 	let (target_path, target) = targets.swap_remove(0);
 	let target_pid = target.pid().unwrap();
-	println!("=> Found {}, PID {}", target_path, target_pid);
+	println!("=> Found PID: {}, path: {}", target_pid, target_path);
 	target
 }
 
