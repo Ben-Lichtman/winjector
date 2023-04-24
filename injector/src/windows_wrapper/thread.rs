@@ -4,7 +4,7 @@ use crate::{
 };
 use std::{ffi::c_void, mem::transmute};
 use windows::Win32::{
-	Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_FAILED},
+	Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_FAILED, WIN32_ERROR},
 	System::{
 		Diagnostics::Debug::{GetThreadContext, SetThreadContext, CONTEXT},
 		Threading::{
@@ -23,7 +23,7 @@ pub struct Thread {
 
 impl Thread {
 	pub fn from_tid(access: THREAD_ACCESS_RIGHTS, inherit: bool, tid: u32) -> Result<Self> {
-		let handle = unsafe { OpenThread(access, inherit, tid).ok()? };
+		let handle = unsafe { OpenThread(access, inherit, tid)? };
 		Ok(Self { handle })
 	}
 
@@ -34,28 +34,27 @@ impl Thread {
 		param: *const c_void,
 		flags: THREAD_CREATION_FLAGS,
 	) -> Result<Self> {
-		let param = param;
+		let param = Some(param);
 		let entry = unsafe { transmute::<_, StartRoutine>(entry) };
 		let mut thread_id = 0;
 		let handle = unsafe {
 			CreateRemoteThreadEx(
 				process.handle(),
-				0 as _,
+				None,
 				stack_size,
 				entry as StartRoutine,
 				param,
 				flags.0,
 				LPPROC_THREAD_ATTRIBUTE_LIST::default(),
-				&mut thread_id,
-			)
-			.ok()?
+				Some(&mut thread_id),
+			)?
 		};
 		Ok(Self { handle })
 	}
 
-	pub fn wait(&self, milliseconds: u32) -> Result<u32> {
+	pub fn wait(&self, milliseconds: u32) -> Result<WIN32_ERROR> {
 		let cause = unsafe { WaitForSingleObjectEx(self.handle, milliseconds, false) };
-		if cause == WAIT_FAILED.0 {
+		if cause == WAIT_FAILED {
 			return Err(Error::ApiCallFailed);
 		}
 		Ok(cause)

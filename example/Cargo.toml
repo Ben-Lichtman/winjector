@@ -12,13 +12,9 @@ debug = true
 overflow-checks = true
 
 [dependencies]
+ntapi = "0.4.0"
 reloader = { path = "../../reloader" }
 
 [dependencies.windows]
-version = "0.34.0"
-features = [
-    "Win32_Foundation",
-    "Win32_System_Diagnostics_Debug",
-    "Win32_Storage_FileSystem",
-    "Win32_UI_WindowsAndMessaging",
-]
+version = "0.43.0"
+features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging"]

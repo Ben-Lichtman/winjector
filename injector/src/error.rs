@@ -4,7 +4,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
-	#[error("windows error")]
+	#[error(transparent)]
 	Windows(#[from] windows::core::Error),
 	#[error("API call failed")]
 	ApiCallFailed,
@@ -14,6 +14,12 @@ pub enum Error {
 	StringErr,
 	#[error(transparent)]
 	UTF8Err(#[from] std::str::Utf8Error),
-	#[error("iced_error")]
+	#[error(transparent)]
 	Iced(#[from] iced_x86::IcedError),
+	#[error(transparent)]
+	IO(#[from] std::io::Error),
+	#[error("injection failed")]
+	InjectFailed,
+	#[error(transparent)]
+	Object(#[from] object::Error),
 }

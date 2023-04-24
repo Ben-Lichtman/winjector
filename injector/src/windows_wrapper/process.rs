@@ -60,7 +60,7 @@ impl Process {
 	}
 
 	pub fn from_pid(pid: u32, access: PROCESS_ACCESS_RIGHTS, inherit: bool) -> Result<Self> {
-		let handle = unsafe { OpenProcess(access, inherit, pid).ok()? };
+		let handle = unsafe { OpenProcess(access, inherit, pid)? };
 		Ok(Self { handle })
 	}
 
@@ -83,7 +83,7 @@ impl Process {
 		let err = unsafe {
 			VirtualQueryEx(
 				self.handle,
-				address as _,
+				Some(address as _),
 				&mut info.inner,
 				size_of::<MEMORY_BASIC_INFORMATION>(),
 			)
@@ -157,7 +157,7 @@ impl Process {
 				address as _,
 				buf.as_mut_ptr() as _,
 				buf.len(),
-				&mut bytes_read,
+				Some(&mut bytes_read),
 			)
 			.ok()?;
 		}
@@ -172,7 +172,7 @@ impl Process {
 				address as _,
 				buf.as_ptr() as _,
 				buf.len(),
-				&mut bytes_written,
+				Some(&mut bytes_written),
 			)
 			.ok()?;
 		}
@@ -180,7 +180,7 @@ impl Process {
 	}
 
 	pub fn flush_instruction_cache(&self, address: usize, size: usize) -> Result<()> {
-		unsafe { FlushInstructionCache(self.handle, address as _, size).ok()? };
+		unsafe { FlushInstructionCache(self.handle, Some(address as _), size).ok()? };
 		Ok(())
 	}
 }

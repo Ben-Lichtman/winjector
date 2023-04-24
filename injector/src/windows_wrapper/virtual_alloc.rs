@@ -19,8 +19,15 @@ impl<'a> VirtualAlloc<'a> {
 		alloc_type: VIRTUAL_ALLOCATION_TYPE,
 		protect: PAGE_PROTECTION_FLAGS,
 	) -> Result<Self> {
-		let address =
-			unsafe { VirtualAllocEx(process.handle(), address as _, size, alloc_type, protect) };
+		let address = unsafe {
+			VirtualAllocEx(
+				process.handle(),
+				Some(address as _),
+				size,
+				alloc_type,
+				protect,
+			)
+		};
 		if address.is_null() {
 			return Err(Error::ApiCallFailed);
 		}

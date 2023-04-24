@@ -21,7 +21,7 @@ impl Snapshot {
 	}
 
 	pub fn from_pid(pid: u32, flags: CREATE_TOOLHELP_SNAPSHOT_FLAGS) -> Result<Self> {
-		let handle = unsafe { CreateToolhelp32Snapshot(flags, pid).ok()? };
+		let handle = unsafe { CreateToolhelp32Snapshot(flags, pid)? };
 		Ok(Self { handle, flags })
 	}
 
@@ -49,8 +49,11 @@ pub struct ThreadEntryIter<'a> {
 
 impl<'a> ThreadEntryIter<'a> {
 	pub fn new(snapshot: &'a Snapshot) -> Self {
-		let mut entry = THREADENTRY32::default();
-		entry.dwSize = size_of::<THREADENTRY32>() as _;
+		let entry = THREADENTRY32 {
+			dwSize: size_of::<THREADENTRY32>() as _,
+			..THREADENTRY32::default()
+		};
+
 		Self {
 			snapshot,
 			entry,
