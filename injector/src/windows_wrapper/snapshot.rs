@@ -29,7 +29,7 @@ impl Snapshot {
 
 	pub fn flags(&self) -> CREATE_TOOLHELP_SNAPSHOT_FLAGS { self.flags }
 
-	pub fn thread_entries(&self) -> ThreadEntryIter { ThreadEntryIter::new(self) }
+	pub fn thread_entries(&self) -> ThreadEntryIter<'_> { ThreadEntryIter::new(self) }
 }
 
 impl Drop for Snapshot {

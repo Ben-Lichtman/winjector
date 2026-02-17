@@ -95,12 +95,12 @@ impl Process {
 	}
 
 	pub fn virtual_alloc(
-		&self,
+		&'_ self,
 		address: usize,
 		size: usize,
 		alloc_type: VIRTUAL_ALLOCATION_TYPE,
 		protect: PAGE_PROTECTION_FLAGS,
-	) -> Result<VirtualAlloc> {
+	) -> Result<VirtualAlloc<'_>> {
 		VirtualAlloc::alloc(self, address, size, alloc_type, protect)
 	}
 
@@ -116,7 +116,10 @@ impl Process {
 		Ok(buf)
 	}
 
-	pub fn enum_modules(&self, filter: ENUM_PROCESS_MODULES_EX_FLAGS) -> Result<Vec<Module>> {
+	pub fn enum_modules(
+		&'_ self,
+		filter: ENUM_PROCESS_MODULES_EX_FLAGS,
+	) -> Result<Vec<Module<'_>>> {
 		let mut module_handles = [HINSTANCE::default(); BUFFER_SIZE];
 		let mut bytes_returned = 0u32;
 		unsafe {

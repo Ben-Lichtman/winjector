@@ -4,7 +4,7 @@ use crate::{
 };
 use std::{ffi::c_void, mem::transmute};
 use windows::Win32::{
-	Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_EVENT, WAIT_FAILED, WIN32_ERROR},
+	Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_EVENT, WAIT_FAILED},
 	System::{
 		Diagnostics::Debug::{CONTEXT, CONTEXT_FLAGS, GetThreadContext, SetThreadContext},
 		Threading::{

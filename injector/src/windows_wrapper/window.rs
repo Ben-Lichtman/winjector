@@ -38,12 +38,12 @@ impl Window {
 
 	pub fn enum_child_windows(&self) -> Vec<Window> {
 		let mut vec = Vec::new();
-		unsafe {
+		let _ = unsafe {
 			EnumChildWindows(
 				Some(self.handle),
 				Some(append_window_to_vec),
 				LPARAM(&mut vec as *mut _ as _),
-			);
+			)
 		};
 		vec
 	}
@@ -66,12 +66,12 @@ unsafe extern "system" fn append_window_to_vec(window_handle: HWND, parameter: L
 
 pub fn get_window_handles(thread_id: u32) -> Vec<Window> {
 	let mut vec = Vec::new();
-	unsafe {
+	let _ = unsafe {
 		EnumThreadWindows(
 			thread_id,
 			Some(append_window_to_vec),
 			LPARAM(&mut vec as *mut _ as _),
-		);
+		)
 	};
 	vec
 }

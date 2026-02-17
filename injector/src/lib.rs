@@ -1,4 +1,4 @@
-#![feature(int_roundings)]
+#![allow(clippy::missing_transmute_annotations)]
 
 pub mod error;
 pub mod helpers;
