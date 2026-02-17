@@ -5,8 +5,8 @@ use std::mem::size_of;
 use windows::Win32::{
 	Foundation::{CloseHandle, HANDLE},
 	System::Diagnostics::ToolHelp::{
-		CreateToolhelp32Snapshot, Thread32First, Thread32Next, CREATE_TOOLHELP_SNAPSHOT_FLAGS,
-		THREADENTRY32,
+		CREATE_TOOLHELP_SNAPSHOT_FLAGS, CreateToolhelp32Snapshot, THREADENTRY32, Thread32First,
+		Thread32Next,
 	},
 };
 
@@ -72,13 +72,11 @@ impl<'a> Iterator for ThreadEntryIter<'a> {
 				unsafe {
 					Thread32First(self.snapshot.handle, &mut self.entry)
 						.ok()
-						.ok()
 						.map(|_| self.entry)
 				}
 			}
 			true => unsafe {
 				Thread32Next(self.snapshot.handle, &mut self.entry)
-					.ok()
 					.ok()
 					.map(|_| self.entry)
 			},

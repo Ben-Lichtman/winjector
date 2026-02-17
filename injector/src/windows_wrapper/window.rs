@@ -1,13 +1,16 @@
 use crate::{
-	error::{Error, Result},
 	BUFFER_SIZE,
+	error::{Error, Result},
 };
 use std::str::from_utf8;
-use windows::Win32::{
-	Foundation::{BOOL, HWND, LPARAM, LRESULT, WPARAM},
-	UI::WindowsAndMessaging::{
-		EnumChildWindows, EnumThreadWindows, GetClassNameA, GetWindowTextA, SendMessageA,
+use windows::{
+	Win32::{
+		Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+		UI::WindowsAndMessaging::{
+			EnumChildWindows, EnumThreadWindows, GetClassNameA, GetWindowTextA, SendMessageA,
+		},
 	},
+	core::BOOL,
 };
 
 pub struct Window {
@@ -37,7 +40,7 @@ impl Window {
 		let mut vec = Vec::new();
 		unsafe {
 			EnumChildWindows(
-				self.handle,
+				Some(self.handle),
 				Some(append_window_to_vec),
 				LPARAM(&mut vec as *mut _ as _),
 			);
@@ -53,7 +56,7 @@ impl Window {
 }
 
 unsafe extern "system" fn append_window_to_vec(window_handle: HWND, parameter: LPARAM) -> BOOL {
-	let vec = (parameter.0 as *mut Vec<_>).as_mut().unwrap();
+	let vec = unsafe { (parameter.0 as *mut Vec<_>).as_mut().unwrap() };
 	let handle = Window {
 		handle: window_handle,
 	};

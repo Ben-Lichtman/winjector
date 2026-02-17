@@ -7,12 +7,12 @@ use std::{
 };
 
 use windows::{
-	core::PCSTR,
 	Win32::{
 		Foundation::HANDLE,
-		System::Memory::{VirtualAllocEx, MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE},
-		UI::WindowsAndMessaging::{MessageBoxA, MB_OK},
+		System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx},
+		UI::WindowsAndMessaging::{MB_OK, MessageBoxA},
 	},
+	core::PCSTR,
 };
 
 pub fn write_file(path: &str) {
@@ -71,7 +71,7 @@ pub fn message_box(msg: &str) {
 pub fn experiment() {
 	let output = unsafe {
 		VirtualAllocEx(
-			HANDLE(-1),
+			HANDLE(-1 as _),
 			None,
 			0x1000,
 			MEM_RESERVE | MEM_COMMIT,

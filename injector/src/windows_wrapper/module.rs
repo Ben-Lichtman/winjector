@@ -1,15 +1,14 @@
 #![allow(clippy::missing_safety_doc)]
 
 use crate::{
+	BUFFER_SIZE,
 	error::{Error, Result},
 	windows_wrapper::process::Process,
-	BUFFER_SIZE,
 };
 use std::{ffi::CString, mem::size_of};
 use windows::{
-	core::PCSTR,
 	Win32::{
-		Foundation::{HANDLE, HINSTANCE},
+		Foundation::{HANDLE, HMODULE},
 		System::{
 			LibraryLoader::GetProcAddress,
 			ProcessStatus::{
@@ -17,6 +16,7 @@ use windows::{
 			},
 		},
 	},
+	core::PCSTR,
 };
 
 #[derive(Debug, Default)]
@@ -50,7 +50,11 @@ impl<'a> Module<'a> {
 	pub fn base_name(&self) -> Result<Vec<u8>> {
 		let mut buf = vec![0u8; BUFFER_SIZE];
 		let n_bytes = unsafe {
-			K32GetModuleBaseNameA(self.process.handle(), HINSTANCE(self.handle.0), &mut buf)
+			K32GetModuleBaseNameA(
+				self.process.handle(),
+				Some(HMODULE(self.handle.0)),
+				&mut buf,
+			)
 		};
 		if n_bytes == 0 {
 			return Err(Error::ApiCallFailed);
@@ -62,7 +66,11 @@ impl<'a> Module<'a> {
 	pub fn file_name(&self) -> Result<Vec<u8>> {
 		let mut buf = vec![0u8; BUFFER_SIZE];
 		let n_bytes = unsafe {
-			K32GetModuleFileNameExA(self.process.handle(), HINSTANCE(self.handle.0), &mut buf)
+			K32GetModuleFileNameExA(
+				Some(self.process.handle()),
+				Some(HMODULE(self.handle.0)),
+				&mut buf,
+			)
 		};
 		if n_bytes == 0 {
 			return Err(Error::ApiCallFailed);
@@ -76,7 +84,7 @@ impl<'a> Module<'a> {
 		unsafe {
 			K32GetModuleInformation(
 				self.process.handle(),
-				HINSTANCE(self.handle.0),
+				HMODULE(self.handle.0),
 				&mut info.inner,
 				size_of::<MODULEINFO>() as u32,
 			)
@@ -91,7 +99,7 @@ impl<'a> Module<'a> {
 			Err(_) => return Err(Error::StringErr),
 		};
 		let address =
-			unsafe { GetProcAddress(HINSTANCE(self.handle.0), PCSTR(export_name.as_ptr() as _)) };
+			unsafe { GetProcAddress(HMODULE(self.handle.0), PCSTR(export_name.as_ptr() as _)) };
 		match address {
 			None => Err(Error::ApiCallNone),
 			Some(a) => Ok(a as _),

@@ -1,25 +1,25 @@
 #![allow(clippy::missing_safety_doc)]
 
 use crate::{
+	BUFFER_SIZE,
 	error::{Error, Result},
 	windows_wrapper::{module::Module, snapshot::Snapshot, virtual_alloc::VirtualAlloc},
-	BUFFER_SIZE,
 };
-use std::mem::size_of;
+use std::{mem::size_of, ptr::null_mut};
 use windows::Win32::{
-	Foundation::{CloseHandle, HANDLE, HINSTANCE},
+	Foundation::{CloseHandle, HANDLE, HINSTANCE, HMODULE},
 	System::{
 		Diagnostics::{
 			Debug::{FlushInstructionCache, ReadProcessMemory, WriteProcessMemory},
 			ToolHelp::CREATE_TOOLHELP_SNAPSHOT_FLAGS,
 		},
 		Memory::{
-			VirtualProtectEx, VirtualQueryEx, MEMORY_BASIC_INFORMATION, PAGE_PROTECTION_FLAGS,
-			PAGE_TYPE, VIRTUAL_ALLOCATION_TYPE,
+			MEMORY_BASIC_INFORMATION, PAGE_PROTECTION_FLAGS, PAGE_TYPE, VIRTUAL_ALLOCATION_TYPE,
+			VirtualProtectEx, VirtualQueryEx,
 		},
 		ProcessStatus::{
-			K32EnumProcessModulesEx, K32EnumProcesses, K32GetModuleFileNameExA,
-			ENUM_PROCESS_MODULES_EX_FLAGS,
+			ENUM_PROCESS_MODULES_EX_FLAGS, K32EnumProcessModulesEx, K32EnumProcesses,
+			K32GetModuleFileNameExA,
 		},
 		Threading::{GetCurrentProcess, GetProcessId, OpenProcess, PROCESS_ACCESS_RIGHTS},
 	},
@@ -106,7 +106,9 @@ impl Process {
 
 	pub fn get_file_name(&self) -> Result<Vec<u8>> {
 		let mut buf = vec![0u8; BUFFER_SIZE];
-		let n_bytes = unsafe { K32GetModuleFileNameExA(self.handle, HINSTANCE(0), &mut buf) };
+		let n_bytes = unsafe {
+			K32GetModuleFileNameExA(Some(self.handle), Some(HMODULE(null_mut())), &mut buf)
+		};
 		if n_bytes == 0 {
 			return Err(Error::ApiCallFailed);
 		}
@@ -123,7 +125,7 @@ impl Process {
 				module_handles.as_mut_ptr() as _,
 				size_of::<[HINSTANCE; BUFFER_SIZE]>() as _,
 				&mut bytes_returned,
-				filter,
+				filter.0,
 			)
 			.ok()?;
 		}
@@ -145,7 +147,7 @@ impl Process {
 	) -> Result<PAGE_PROTECTION_FLAGS> {
 		let mut old_protect = PAGE_PROTECTION_FLAGS::default();
 
-		unsafe { VirtualProtectEx(self.handle, address as _, size, flag, &mut old_protect).ok()? };
+		unsafe { VirtualProtectEx(self.handle, address as _, size, flag, &mut old_protect)? };
 		Ok(old_protect)
 	}
 
@@ -158,8 +160,7 @@ impl Process {
 				buf.as_mut_ptr() as _,
 				buf.len(),
 				Some(&mut bytes_read),
-			)
-			.ok()?;
+			)?;
 		}
 		Ok(bytes_read)
 	}
@@ -173,14 +174,13 @@ impl Process {
 				buf.as_ptr() as _,
 				buf.len(),
 				Some(&mut bytes_written),
-			)
-			.ok()?;
+			)?;
 		}
 		Ok(bytes_written)
 	}
 
 	pub fn flush_instruction_cache(&self, address: usize, size: usize) -> Result<()> {
-		unsafe { FlushInstructionCache(self.handle, Some(address as _), size).ok()? };
+		unsafe { FlushInstructionCache(self.handle, Some(address as _), size)? };
 		Ok(())
 	}
 }

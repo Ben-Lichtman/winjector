@@ -4,13 +4,13 @@ use crate::{
 };
 use std::{ffi::c_void, mem::transmute};
 use windows::Win32::{
-	Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_FAILED, WIN32_ERROR},
+	Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_EVENT, WAIT_FAILED, WIN32_ERROR},
 	System::{
-		Diagnostics::Debug::{GetThreadContext, SetThreadContext, CONTEXT},
+		Diagnostics::Debug::{CONTEXT, CONTEXT_FLAGS, GetThreadContext, SetThreadContext},
 		Threading::{
-			CreateRemoteThreadEx, GetExitCodeThread, GetThreadTimes, OpenThread, ResumeThread,
-			SuspendThread, WaitForSingleObjectEx, LPPROC_THREAD_ATTRIBUTE_LIST,
-			LPTHREAD_START_ROUTINE, THREAD_ACCESS_RIGHTS, THREAD_CREATION_FLAGS,
+			CreateRemoteThreadEx, GetExitCodeThread, GetThreadTimes, LPPROC_THREAD_ATTRIBUTE_LIST,
+			LPTHREAD_START_ROUTINE, OpenThread, ResumeThread, SuspendThread, THREAD_ACCESS_RIGHTS,
+			THREAD_CREATION_FLAGS, WaitForSingleObjectEx,
 		},
 	},
 };
@@ -45,14 +45,14 @@ impl Thread {
 				entry as StartRoutine,
 				param,
 				flags.0,
-				LPPROC_THREAD_ATTRIBUTE_LIST::default(),
+				Some(LPPROC_THREAD_ATTRIBUTE_LIST::default()),
 				Some(&mut thread_id),
 			)?
 		};
 		Ok(Self { handle })
 	}
 
-	pub fn wait(&self, milliseconds: u32) -> Result<WIN32_ERROR> {
+	pub fn wait(&self, milliseconds: u32) -> Result<WAIT_EVENT> {
 		let cause = unsafe { WaitForSingleObjectEx(self.handle, milliseconds, false) };
 		if cause == WAIT_FAILED {
 			return Err(Error::ApiCallFailed);
@@ -63,7 +63,7 @@ impl Thread {
 	pub fn exit_code(&self) -> Result<u32> {
 		let mut code = 0;
 		unsafe {
-			GetExitCodeThread(self.handle, &mut code).ok()?;
+			GetExitCodeThread(self.handle, &mut code)?;
 		}
 		Ok(code)
 	}
@@ -77,8 +77,7 @@ impl Thread {
 				&mut times[1],
 				&mut times[2],
 				&mut times[3],
-			)
-			.ok()?;
+			)?;
 		}
 		Ok(times)
 	}
@@ -99,20 +98,20 @@ impl Thread {
 		Ok(prev_count)
 	}
 
-	pub fn context(&self, flags: u32) -> Result<CONTEXT> {
+	pub fn context(&self, flags: CONTEXT_FLAGS) -> Result<CONTEXT> {
 		let mut context = CONTEXT {
 			ContextFlags: flags,
 			..Default::default()
 		};
 		unsafe {
-			GetThreadContext(self.handle, &mut context).ok()?;
+			GetThreadContext(self.handle, &mut context)?;
 		}
 		Ok(context)
 	}
 
 	pub fn set_context(&self, context: &CONTEXT) -> Result<()> {
 		unsafe {
-			SetThreadContext(self.handle, context).ok()?;
+			SetThreadContext(self.handle, context)?;
 		}
 		Ok(())
 	}

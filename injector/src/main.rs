@@ -51,16 +51,13 @@ fn process_from_name(target_name: &str) -> winjector::windows_wrapper::process::
 	// }
 	let (target_path, target) = targets.swap_remove(0);
 	let target_pid = target.pid().unwrap();
-	println!("=> Found PID: {}, path: {}", target_pid, target_path);
+	// println!("=> Found PID: {}, path: {}", target_pid, target_path);
 	target
 }
 
 fn process_from_pid(pid: u32) -> winjector::windows_wrapper::process::Process {
-	let target =
-		winjector::windows_wrapper::process::Process::from_pid(pid, PROCESS_ALL_ACCESS, true)
-			.unwrap();
-	println!("=> Found PID: {}", pid);
-	target
+	// println!("=> Found PID: {}", pid);
+	winjector::windows_wrapper::process::Process::from_pid(pid, PROCESS_ALL_ACCESS, true).unwrap()
 }
 
 fn main() {

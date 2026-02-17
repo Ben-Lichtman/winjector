@@ -2,13 +2,13 @@ use crate::{
 	error::Result,
 	windows_wrapper::{
 		module::Module,
-		process::{enum_process_ids, Process},
+		process::{Process, enum_process_ids},
 		thread::Thread,
 	},
 };
 use object::{Object, ObjectSegment};
 use windows::Win32::System::{
-	Diagnostics::ToolHelp::TH32CS_SNAPTHREAD,
+	Diagnostics::{Debug::CONTEXT_FLAGS, ToolHelp::TH32CS_SNAPTHREAD},
 	ProcessStatus::LIST_MODULES_ALL,
 	Threading::{
 		PROCESS_ALL_ACCESS, THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION, THREAD_SET_CONTEXT,
@@ -89,10 +89,12 @@ pub fn redirect_main_thread(process: &Process, entry: usize) -> Result<()> {
 	main_thread.suspend().unwrap();
 
 	// monkey with thread context
-	let mut context = main_thread.context(0x100000 | 0x00000001).unwrap();
+	let mut context = main_thread
+		.context(CONTEXT_FLAGS(0x100000 | 0x00000001))
+		.unwrap();
 	let _old_rip = context.Rip;
 
-	context.ContextFlags |= 0x00100000 | 0x00000001;
+	context.ContextFlags |= CONTEXT_FLAGS(0x100000 | 0x00000001);
 	context.Rip = entry as _;
 
 	// Set thread running again

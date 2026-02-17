@@ -1,2 +1,9 @@
 [workspace]
+resolver = "3"
 members = ["injector", "example"]
+
+
+[profile.release]
+debug = true
+overflow-checks = true
+strip = true

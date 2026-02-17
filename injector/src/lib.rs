@@ -5,7 +5,7 @@ pub mod helpers;
 pub mod shellcode;
 pub mod windows_wrapper;
 
-use object::{read::pe::PeFile64, Object};
+use object::{Object, read::pe::PeFile64};
 use windows::Win32::System::{
 	Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_READWRITE},
 	Threading::THREAD_CREATE_RUN_IMMEDIATELY,

@@ -1,6 +1,5 @@
-use windows::Win32::System::{
-	Diagnostics::Debug::PROCESSOR_ARCHITECTURE,
-	SystemInformation::{GetSystemInfo, SYSTEM_INFO},
+use windows::Win32::System::SystemInformation::{
+	GetSystemInfo, PROCESSOR_ARCHITECTURE, SYSTEM_INFO,
 };
 
 pub struct SystemInfo {
