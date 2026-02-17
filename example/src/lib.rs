@@ -1,11 +1,11 @@
 mod payloads;
 
 use crate::payloads::*;
-use reloader as _;
+// use reloader as _;
 use std::ffi::{CStr, c_void};
 // use symfinder::find_symbol;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 extern "system" fn DllMain(_dll_module: i64, call_reason: i32, _reserved: *const c_void) -> i32 {
 	const DLL_PROCESS_ATTACH: i32 = 1;
